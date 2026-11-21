@@ -1,0 +1,70 @@
+name: android-build
+
+on:
+  pull_request:
+    paths:
+      - .github/workflows/android-build.yml
+      - prototypes/mygo-run/**
+  push:
+    branches:
+      - codex/android-apk
+    paths:
+      - .github/workflows/android-build.yml
+      - prototypes/mygo-run/**
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build-android:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: prototypes/mygo-run/go.mod
+          cache-dependency-path: prototypes/mygo-run/go.sum
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+
+      - name: Check Android toolchain
+        run: |
+          set -euo pipefail
+          go version
+          java -version
+          test -d "$ANDROID_HOME"
+          test -d "$ANDROID_NDK_HOME"
+          echo "ANDROID_HOME=$ANDROID_HOME"
+          echo "ANDROID_NDK_HOME=$ANDROID_NDK_HOME"
+
+      - name: Build Android arm64 APK
+        working-directory: prototypes/mygo-run
+        run: go run github.com/egoist/mygo/cmd/mygo@v0.10.0 build -platform android/arm64
+
+      - name: Verify and stage APK
+        run: |
+          set -euo pipefail
+          apk="$(find prototypes/mygo-run/dist -type f -name '*.apk' -print -quit)"
+          test -n "$apk"
+          test -s "$apk"
+          unzip -t "$apk"
+          signer="$(find "$ANDROID_HOME/build-tools" -maxdepth 2 -type f -name apksigner | sort -V | tail -n 1)"
+          test -n "$signer"
+          "$signer" verify --verbose "$apk"
+          mkdir -p release/android
+          cp "$apk" "release/android/AsterLab-${GITHUB_SHA:0:7}-android-arm64.apk"
+          cd release/android
+          sha256sum *.apk > SHA256SUMS.txt
+          cat SHA256SUMS.txt
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: asterlab-android-arm64
+          if-no-files-found: error
+          path: |
+            release/android/*.apk
+            release/android/SHA256SUMS.txt
