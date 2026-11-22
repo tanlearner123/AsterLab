@@ -20,9 +20,10 @@ AsterLab 所有界面的颜色、间距、圆角、字号与物理动效均收�
 - **`theme.GradientRampColor(tNorm, dark)`**：用于 `plate@1` 数值浓度梯度的单调连续色阶渐变（图例自动按浓度从高到低排列）。
 - **`theme.WellRoleColor(role, dark)`**：统一映射 `sample`、`standard`、`positive_control`、`negative_control`、`vehicle`、`ntc` 与 `blank`。
 
-## 间距、字号、圆角、去重框与无障碍缩放
+## 间距、字号、圆角、正文/组件区分与统一骨架
 
-- **4px 基准间距**：仅使用 `Spacing4 (4)`、`Spacing8 (8)`、`Spacing12 (12)`、`Spacing16 (16)`、`Spacing24 (24)`、`Spacing32 (32)`、`Spacing48 (48)`。
+- **4px 基准间距与块间距节奏**：仅使用 `Spacing4 (4)`、`Spacing8 (8)`、`Spacing12 (12)`、`Spacing16 (16)`、`Spacing24 (24)`、`Spacing32 (32)`、`Spacing48 (48)`。文档顶层块间距统一 `Spacing16`，组件内头部↔内容间距统一 `Spacing12`，组件内行间距统一 `Spacing8`；Markdown 正文行高统一 `1.65`，标题行高统一 `1.4`。
+- **普通 Markdown vs. 科学组件一目了然**：普通 Markdown 正文无框无底色直接铺在 `tok.Canvas` 纸面上；所有顶层结构化科学组件（分组表、孔板、参数表、数据表、计算器、图片关联卡等）统一使用 `renderUnifiedModuleShell`（`tok.Surface` + `1px tok.Border` + `PanelRadius`），并强制保持一致的头部骨架：**`[16px Accent 语义图标] [可编辑标题] [Spacer] [右侧 tnum 摘要/操作图标]` + `1px` 发丝分割线 + 组件详情区**（嵌套于步骤卡片内时自动去掉外框避免套娃）。
 - **字号层级与全库缩放**：`TextPage (22)`、`TextSection (15)`、`TextBody (13)`、`TextMeta (12)`、`TextData (12)`；控件基准高度 `ButtonHeight / InputHeight = 30`、`RowHeight = 32`，全部通过 `SetAccessibilityPrefs(textScale, reduceMotion)` 动态响应设置中心的字体缩放滑块。
 - **三档圆角统一**：`ControlRadius (6)`（全局基准 `t.Radius = float32(ControlRadius)`）、`PanelRadius (12)`、`DialogRadius (14)`；悬浮胶囊与圆形图标按钮使用 `height / 2`。
 - **Anti-XP-Box（去重框）与实底 Dark 弹窗**：正文与属性内联输入禁止白底圆角框套娃，统一使用 `asterdoc.BorderlessTextInput`、`StyleSelectQuiet` 与科学显示单位映射 `DisplayUnit`（`°C`、`μL`、`μm`、`μM`、`×g`）；模态弹窗在 Dark 模式下强制铺设高对比度实底 `tok.Surface` + `tok.BorderStrong` 防止底层文本透射。

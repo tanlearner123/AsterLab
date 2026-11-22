@@ -10,8 +10,10 @@ type ViewMode uint8
 
 const (
 	ModeEdit ViewMode = iota
-	ModeRead
+	ModeLab
 	ModeSource
+	// ModeRead is a compatibility alias for ModeLab (anti-accidental-edit lab execution mode).
+	ModeRead = ModeLab
 )
 
 // TabKind distinguishes Obsidian workspace tab surfaces.
@@ -75,12 +77,16 @@ type QuickPantryItem struct {
 	CatalogNumber string
 }
 
-// OutlineItem represents one step inside the currently focused experiment.
+// OutlineItem represents one chapter heading or executable step inside the focused document.
 type OutlineItem struct {
-	ID     string
-	Title  string
-	Meta   string
-	Active bool
+	ID        string
+	Title     string
+	IsStep    bool
+	Number    string
+	Depth     int
+	StepDepth int
+	Meta      string
+	Active    bool
 }
 
 // PaletteCommand represents a host-registered quick action inside Ctrl+K Command Palette.
@@ -1030,8 +1036,8 @@ func fmtTabTooltip(t WorkspaceTab) string {
 	case TabFile:
 		modeLabel := "编辑"
 		switch t.Mode {
-		case ModeRead:
-			modeLabel = "阅读"
+		case ModeLab:
+			modeLabel = "实验模式"
 		case ModeSource:
 			modeLabel = "源码"
 		}

@@ -23,21 +23,6 @@ const releaseBlankTemplateDoc = `---
 title: 空白实验
 ---
 
-` + "```asterlab" + `
-kind: step
-id: step-01
-schema: 1
-title: 步骤 1
-blocks: []
-` + "```" + `
-
-` + "```asterlab" + `
-kind: step
-id: step-02
-schema: 1
-title: 步骤 2
-blocks: []
-` + "```" + `
 `
 
 func defaultTemplateSeeds() map[string]string {

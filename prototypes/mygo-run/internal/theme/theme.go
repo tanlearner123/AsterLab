@@ -4,12 +4,26 @@
 package theme
 
 import (
+	"math"
 	"sync"
 
 	"github.com/egoist/mygo/plugins/glass"
 	"github.com/egoist/mygo/ui"
 	onevra "github.com/oneo-me/onevra/source/theme"
 )
+
+// MixColor linearly interpolates between two registered theme colors in sRGB space.
+func MixColor(c0, c1 ui.Color, frac float32) ui.Color {
+	if frac < 0 {
+		frac = 0
+	} else if frac > 1 {
+		frac = 1
+	}
+	mix := func(a, b uint8) uint8 {
+		return uint8(math.Round(float64(a)*(1-float64(frac)) + float64(b)*float64(frac)))
+	}
+	return ui.RGBA(mix(c0.R, c1.R), mix(c0.G, c1.G), mix(c0.B, c1.B), 1.0)
+}
 
 const (
 	PresetObsidian = "obsidian" // Pure white editorial paper + whisper-cool #f5f6f8 borderless cards

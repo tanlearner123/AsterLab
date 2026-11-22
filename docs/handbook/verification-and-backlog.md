@@ -18,7 +18,7 @@ python scripts/sdk/check.py
 $env:ASTERLAB_VISUAL_DIR = "$PWD\docs\sdk\evidence\v2-visual-catalog"
 Push-Location prototypes/mygo-run
 go test -p=2 -count=1 ./internal/... ./cmd/...
-go test -p=2 -count=1 -run "TestObsidianVaultInteractiveExperienceAndVisualCatalog|TestVisualArchiveSettingsMobileAndContextMenus|TestV2WorkbenchVisualGate" .
+go test -p=2 -count=1 -run "TestObsidianVaultInteractiveExperienceAndVisualCatalog|TestVisualArchiveSettingsMobileAndContextMenus|TestV2WorkbenchVisualGate|TestUnifiedLivePreviewLabModeAndInlineRelations" .
 go build ./...
 Pop-Location
 ```
@@ -37,6 +37,7 @@ rg -n "ui\.Hex\(|ui\.RGBA\(|FontSize\([0-9]|Radius\([0-9]" prototypes/mygo-run/i
 | **Dark 模态弹窗底色透射重影** | [settings.go](../../prototypes/mygo-run/internal/shell/settings.go) 与 [command_palette.go](../../prototypes/mygo-run/internal/shell/command_palette.go) / [search_modal.go](../../prototypes/mygo-run/internal/shell/search_modal.go) 统一铺设 `tok.Surface` 实底与 `tok.BorderStrong` 边框（见下方修复后实图） | **已解决** |
 | **用户快捷键不生效与源码 `Ctrl+Z` 冲突** | [hotkeys.go](../../prototypes/mygo-run/internal/shell/hotkeys.go) 实现规范键位匹配，[live_doc.go](../../prototypes/mygo-run/internal/vault/live_doc.go) 增加 800ms 源码输入撤销防抖 | **已解决** |
 | **孔板浓度因子色阶冲突与 PNG 空导出** | [plate.go](../../prototypes/mygo-run/internal/uikit/plate/plate.go) 启用数值单调梯度渐变；[plate_png.go](../../prototypes/mygo-run/internal/asterdoc/plate_png.go) 实现纯 Go 孔板 PNG 导出 | **已解决** |
+| **统一科学笔记编辑器（Obsidian Live Preview + 实验防误触模式 + 行内关联语法 + Agent 命令总线）** | [live_markdown.go](../../prototypes/mygo-run/internal/asterdoc/live_markdown.go)、[relations.go](../../prototypes/mygo-run/internal/asterdoc/relations.go)、[embed_card.go](../../prototypes/mygo-run/internal/asterdoc/embed_card.go)、[internal/astercmd](../../prototypes/mygo-run/internal/astercmd/)、[cmd/asterlab](../../prototypes/mygo-run/cmd/asterlab/main.go) 全量闭环并通过视觉与单测门禁 | **已解决** |
 
 ### Dark 模态弹窗修复后实拍证据
 

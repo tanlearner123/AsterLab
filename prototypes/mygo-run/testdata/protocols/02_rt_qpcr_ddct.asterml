@@ -1,0 +1,137 @@
+---
+asterml: "2.1"
+title: RT-qPCR 相对定量（ΔΔCt）基因表达检测（分子生物学）
+scheduled_date: "2026-11-22"
+status: active
+tags: [molecular-biology, qpcr, ddct, rna]
+---
+
+## 1.1 实验设计（全局蓝图：分组与反应板）
+- **实验目的**：检测药物处理后 VEGFA 与内参 GAPDH 的 mRNA 相对表达变化
+- **容器与复孔**：1 块 96 孔板（3 组 × 2 基因 × 3 技术复孔 = 18 实验孔 + 2 个 NTC 无模板空白孔）
+
+## 试剂与耗材
+- Primer 上下游引物母液 100 uM（-20°C 避光保存）
+- SYBR Green 2× MasterMix（4°C 避光短期保存）
+- RNase-free 水与 5× 逆转录缓冲液
+
+```asterlab
+id: gt-qpcr
+kind: group_table
+schema: 1
+title: RT-qPCR 实验分组
+rows:
+  - id: g_ctrl
+    name: Control 对照组
+    role: control
+    technical_repeats: 6
+  - id: g_low
+    name: Low Dose 低剂量
+    role: treatment
+    technical_repeats: 6
+  - id: g_high
+    name: High Dose 高剂量
+    role: treatment
+    technical_repeats: 6
+  - id: g_ntc
+    name: NTC 无模板空白
+    role: control
+    technical_repeats: 2
+```
+
+```asterlab
+id: plate-qpcr
+kind: plate
+schema: 1
+title: 96 孔 qPCR 反应板（18 实验孔 + 2 NTC 空白孔）
+format: 96
+groups:
+  g_ctrl: [A1, A2, A3, A4, A5, A6]
+  g_low: [B1, B2, B3, B4, B5, B6]
+  g_high: [C1, C2, C3, C4, C5, C6]
+  g_ntc: [D1, D2]
+roles:
+  D1: blank
+  D2: blank
+```
+
+## 1.2 实验步骤（就地执行工具流）
+
+#@ 引物稀释与逆转录反应
+- 将 Primer 母液稀释至 10 uM 工作液，终体积 100 uL
+
+```asterlab
+id: calc-rt-cdna
+kind: calculator
+schema: 1
+title: 逆转录 cDNA 总反应体系
+mode: formula
+rows:
+  - key: N_rna
+    label: 样本数（每组 3 生物学重复）
+    kind: input
+    value: 9
+    unit: 管
+  - key: V_rt
+    label: 单管逆转录体积
+    kind: input
+    value: 20
+    unit: uL
+  - key: V_tot
+    label: 逆转录总体系体积
+    kind: formula
+    formula: 'N_{rna} \times V_{rt}'
+    unit: uL
+```
+
+- 65°C 水浴变性 5 min；随后冰上静置 2 min
+- 42°C 逆转录孵育 45 min，然后 85°C 灭活 5 min
+
+#@ qPCR 体系分装与上机
+- 按单孔 10 uL、加 15% 余量配制 SYBR 预混液
+
+```asterlab
+id: calc-qpcr-mm
+kind: calculator
+schema: 1
+title: qPCR 预混液配制（联动有效实验孔 + 上游 cDNA 体积）
+mode: formula
+rows:
+  - key: N
+    label: 有效反应孔数（排除 NTC）
+    kind: input
+    value: "@plate.sample_wells"
+    unit: 孔
+  - key: V_mix
+    label: 单孔 2× SYBR Mix 体积
+    kind: input
+    value: 10
+    unit: uL
+  - key: r
+    label: 富余比例 (15%)
+    kind: input
+    value: 0.15
+    unit: ""
+  - key: V_cdna_pool
+    label: 上游逆转录 cDNA 总量
+    kind: input
+    value: "@calc.calc-rt-cdna.V_tot"
+    unit: uL
+  - key: V_sybr_tot
+    label: SYBR 预混液总体积
+    kind: formula
+    formula: 'N \times V_{mix} \times (1 + r)'
+    unit: uL
+  - key: V_rem_cdna
+    label: 上机后剩余 cDNA 留样
+    kind: formula
+    formula: 'V_{cdna_pool} - N \times 2'
+    unit: uL
+```
+
+- 1000 rpm 瞬时离心 1 min 去除孔内气泡后上机
+- 移液枪轻柔吹打混匀，注意避免产生气泡
+
+## 2. 实验讨论与复盘
+- 上次 NTC 孔在 Ct=36 出现微弱扩增，本次更换新批次 RNase-free 水
+- 文献建议引物退火温度设在 Tm-3°C 附近以减少引物二聚体

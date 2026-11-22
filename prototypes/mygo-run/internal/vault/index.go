@@ -28,6 +28,7 @@ type IndexedDoc struct {
 	Steps        []string          `json:"steps,omitempty"`
 	PantryCodes  []string          `json:"pantryCodes,omitempty"`
 	WikiLinks    []string          `json:"wikiLinks,omitempty"`
+	Relations    []IndexedRelation `json:"relations,omitempty"`
 	ActiveTimers []VaultTimerEntry `json:"activeTimers,omitempty"`
 	GroupCount   int               `json:"groupCount,omitempty"`
 	Lines        []string          `json:"lines,omitempty"`
@@ -66,6 +67,19 @@ type LinkRef struct {
 	SourceTitle string `json:"sourceTitle"`
 	SourceDate  string `json:"sourceDate,omitempty"`
 	Kind        string `json:"kind"` // "wikilink" | "repeat_of"
+}
+
+// IndexedRelation caches one explicit inline or attachment scientific relation for fast bidirectional lookup.
+type IndexedRelation struct {
+	RelPath   string `json:"relPath"`
+	Asset     string `json:"asset"`
+	ObjectID  string `json:"objectId"`
+	SubTarget string `json:"subTarget,omitempty"`
+	Timepoint string `json:"timepoint,omitempty"`
+	FOV       int    `json:"fov,omitempty"`
+	Role      string `json:"role,omitempty"`
+	Line      int    `json:"line,omitempty"`
+	Valid     bool   `json:"valid"`
 }
 
 // BasesQuery defines structured filtering for cross-experiment LabBases queries.
@@ -231,6 +245,7 @@ func indexOneSource(f FileEntry, src string, mtime int64) IndexedDoc {
 	var steps []string
 	var pantryCodes []string
 	var timers []VaultTimerEntry
+	var relations []IndexedRelation
 	groupCount := 0
 	pantrySeen := map[string]bool{}
 	addPantry := func(c string) {
@@ -290,6 +305,21 @@ func indexOneSource(f FileEntry, src string, mtime int64) IndexedDoc {
 				groupCount++
 			}
 		}
+		for _, rr := range asterdoc.ResolveRelations(parsed) {
+			for _, tc := range rr.Contexts {
+				relations = append(relations, IndexedRelation{
+					RelPath:   f.RelPath,
+					Asset:     rr.Asset,
+					ObjectID:  tc.ObjectID,
+					SubTarget: tc.SubTarget,
+					Timepoint: rr.Timepoint,
+					FOV:       rr.FOV,
+					Role:      rr.Role,
+					Line:      rr.Line,
+					Valid:     tc.Valid,
+				})
+			}
+		}
 	}
 
 	rawLines := strings.Split(strings.ReplaceAll(src, "\r\n", "\n"), "\n")
@@ -313,6 +343,7 @@ func indexOneSource(f FileEntry, src string, mtime int64) IndexedDoc {
 		Steps:        steps,
 		PantryCodes:  pantryCodes,
 		WikiLinks:    ExtractWikiLinks(src),
+		Relations:    relations,
 		ActiveTimers: timers,
 		GroupCount:   groupCount,
 		Lines:        lines,
@@ -416,6 +447,34 @@ func (idx *VaultIndex) BacklinksFor(targetRel string) []LinkRef {
 	}
 	idx.mu.RUnlock()
 	sort.Slice(out, func(i, j int) bool { return out[i].SourceTitle < out[j].SourceTitle })
+	return out
+}
+
+// RelationsFor returns cached bidirectional relations targeting (objectID, subTarget).
+// When relPath is empty, searches across all Vault documents.
+func (idx *VaultIndex) RelationsFor(relPath, objectID, subTarget string) []IndexedRelation {
+	if idx == nil || strings.TrimSpace(objectID) == "" {
+		return nil
+	}
+	objectID = strings.TrimSpace(objectID)
+	subTarget = strings.ToUpper(strings.TrimSpace(subTarget))
+	idx.mu.RLock()
+	defer idx.mu.RUnlock()
+	var out []IndexedRelation
+	for p, d := range idx.docs {
+		if relPath != "" && p != relPath {
+			continue
+		}
+		for _, r := range d.Relations {
+			if r.ObjectID != objectID {
+				continue
+			}
+			if subTarget != "" && !strings.EqualFold(r.SubTarget, subTarget) {
+				continue
+			}
+			out = append(out, r)
+		}
+	}
 	return out
 }
 

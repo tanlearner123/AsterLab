@@ -1,0 +1,170 @@
+---
+asterml: "2.1"
+title: HUVEC 3D GelMA 水凝胶体外成管实验（细胞与组织工程）
+scheduled_date: "2026-11-22"
+status: active
+tags: [cell-biology, huvec, hydrogel, angiogenesis]
+---
+
+## 1.1 实验设计（全局蓝图：分组与容器）
+- **研究体系**：DMEM 高糖 + 10% FBS + 10 ng/mL VEGF（稀释比 1/1000）
+- **单一自变量**：GelMA 浓度（3%、5%、7% w/v），固定光引发剂 0.25% (w/v) LAP
+- **容器与复孔**：1 块 12 孔板（3×4），9 孔实验组（每组 3 技术复孔），第 4 列加无菌 PBS 防边缘蒸发
+
+## 试剂与耗材
+- VEGF 母液 100 ug/mL（-80°C 分装保存，避免反复冻融）
+- GelMA 冻干粉（甲基丙烯酰化明胶，-20°C 避光干燥保存）
+- LAP 光引发剂母液 0.25% w/v（PBS 配制，4°C 避光保存）
+
+```asterlab
+id: gt-huvec
+kind: group_table
+schema: 1
+title: GelMA 浓度梯度分组
+rows:
+  - id: g_3pct
+    name: 3% GelMA
+    role: treatment
+    condition: 3% w/v GelMA + 0.25% LAP
+    technical_repeats: 3
+  - id: g_5pct
+    name: 5% GelMA
+    role: treatment
+    condition: 5% w/v GelMA + 0.25% LAP
+    technical_repeats: 3
+  - id: g_7pct
+    name: 7% GelMA
+    role: treatment
+    condition: 7% w/v GelMA + 0.25% LAP
+    technical_repeats: 3
+  - id: g_pbs
+    name: PBS 边缘空白
+    role: control
+    condition: 无菌 PBS 防蒸发
+    technical_repeats: 3
+```
+
+```asterlab
+id: plate-huvec
+kind: plate
+schema: 1
+title: 12 孔板布局（9 实验孔 + 3 PBS 空白孔）
+format: 12
+groups:
+  g_3pct: [A1, A2, A3]
+  g_5pct: [B1, B2, B3]
+  g_7pct: [C1, C2, C3]
+  g_pbs: [A4, B4, C4]
+roles:
+  A4: blank
+  B4: blank
+  C4: blank
+```
+
+## 1.2 实验步骤（就地执行工具流）
+
+#@ GelMA 前驱液配制、热循环溶解与光交联
+- 将 5% w/v GelMA 冻干粉配制 2 mL 溶液，计算称粉量
+
+```asterlab
+id: calc-huvec-mm
+kind: calculator
+schema: 1
+title: 前驱液总体积估算（联动有效实验孔）
+mode: formula
+rows:
+  - key: N
+    label: 有效实验孔数
+    kind: input
+    value: "@plate.sample_wells"
+    unit: 孔
+  - key: V_well
+    label: 单孔铺胶体积
+    kind: input
+    value: 500
+    unit: uL
+  - key: r
+    label: 移液富余系数
+    kind: input
+    value: 0.2
+    unit: ""
+  - key: V_tot
+    label: 前驱液总需求量
+    kind: formula
+    formula: 'N \times V_{well} \times (1 + r)'
+    unit: uL
+```
+
+```asterlab
+id: calc-gelma-mass
+kind: calculator
+schema: 1
+title: 5% GelMA 冻干粉称量（级联上游体积）
+mode: formula
+rows:
+  - key: V_tot
+    label: 上游前驱液总量
+    kind: input
+    value: "@calc.calc-huvec-mm.V_tot"
+    unit: uL
+  - key: C_w
+    label: 目标 GelMA 浓度
+    kind: input
+    value: 5
+    unit: "% w/v"
+  - key: m_gelma
+    label: 需称取冻干粉总质量
+    kind: formula
+    formula: 'C_{w} \times \frac{V_{tot}}{1000} \times 10'
+    unit: mg
+```
+
+- 80°C 水浴 5 min 与冰上 10 min 交替 3 轮至完全澄清
+- 肉眼确认溶液完全澄清；若无气泡则按规则跳过 2000 rpm 离心脱泡
+- 405 nm 蓝光照射直至水凝胶完全固化，记录实际固化秒数
+
+#@ 浸泡平衡与 HUVEC 接种 {#t0}
+- 每孔加入 1.0 mL 无 VEGF 完全培养基，4°C 浸泡平衡至少 2 h
+- 将 VEGF 母液稀释至 50 ng/mL 工作液，终体积 5 mL
+- 实测 HUVEC 悬液密度 5e5 cells/mL，每孔接种 5e4 细胞，每孔 500 uL
+
+```asterlab
+id: timer-t0-seed
+kind: timer
+schema: 1
+title: HUVEC 接种完成锚点 (t0)
+mode: stopwatch
+anchor: t0
+started_at: "2026-11-22T02:00:00Z"
+```
+
+#@ 多时间点明场采图与成管定量
+- 对全部实验孔每孔采集 6 个非重叠明场视野
+
+```asterlab
+id: timer-obs-6h
+kind: timer
+schema: 1
+title: t0 + 6 h 成管初筛采图窗
+mode: window
+anchor: t0
+offset:
+  value: 6
+  unit: h
+schedule_window: "t0 + 6 h 明场采图"
+```
+
+```asterlab
+id: att-huvec-6h
+kind: attachment
+schema: 1
+title: t0 + 6 h 明场显微采图网格
+scope: container_grid
+container_ref: plate-huvec
+slots_per_cell: 6
+media_hint: 每孔 6 个非重叠 10× 明场视野（自动排除第 4 列 PBS 空白孔）
+```
+
+## 2. 实验讨论与复盘
+- 上次 37°C 孵育 30 min 后凝胶回缩，本次改为 405 nm 蓝光实时监控固化终点
+- 文献报道 50 ng/mL VEGF 处理 24 h 可显著促进血管出芽

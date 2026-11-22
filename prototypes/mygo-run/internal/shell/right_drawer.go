@@ -102,21 +102,69 @@ func (s *Shell) rightDrawer(c *ui.Context) {
 
 func (s *Shell) renderDrawerOutline(c *ui.Context, tok theme.Tokens) {
 	if len(s.OutlineSteps) == 0 {
-		components.Text(c, "打开实验文件后，此处显示步骤大纲以便点击跳转。").
+		components.Text(c, "打开实验文件后，此处显示文档大纲与步骤以便点击跳转。").
 			FontSize(float32(tok.TextMeta)).TextColor(tok.TextMuted)
 		return
 	}
-	for _, step := range s.OutlineSteps {
-		step := step
-		fg := tok.TextMuted
-		if step.Active {
-			fg = tok.Accent
+	// Compact segmented filter: [ 全部 | 仅步骤 ]
+	hasSteps := false
+	hasHeadings := false
+	for _, it := range s.OutlineSteps {
+		if it.IsStep {
+			hasSteps = true
+		} else {
+			hasHeadings = true
 		}
-		btn := ui.ButtonBase(c.Key("rd-step-"+step.ID)).FillWidth().Justify(ui.Start).
-			Padding(float32(tok.Spacing4)*1.5, float32(tok.Spacing8)).
-			Radius(float32(tok.ControlRadius)).Label("跳至 " + step.Title)
+	}
+	if hasSteps && hasHeadings {
+		ui.Row(c).FillWidth().Padding(0, 0, float32(tok.Spacing8), 0).AlignItems(ui.Center).Gap(float32(tok.Spacing4)).Children(func() {
+			for idx, lbl := range []string{"全部", "仅步骤"} {
+				idx, lbl := idx, lbl
+				active := (idx == 1) == s.OutlineOnlySteps
+				pill := ui.ButtonBase(c.Key(fmt.Sprintf("rd-ol-flt-%d", idx))).
+					Height(float32(tok.Spacing24)).Padding(0, float32(tok.Spacing8)).
+					AlignItems(ui.Center).Radius(float32(tok.ControlRadius)).Label("大纲筛选：" + lbl)
+				fg := tok.TextMuted
+				if active {
+					pill.Background(tok.AccentSoftBg).Border(1, tok.Accent.Alpha(0.32))
+					fg = tok.Accent
+				} else if pill.Hovered() {
+					pill.Background(tok.Text.Alpha(0.04))
+					fg = tok.Text
+				}
+				pill.Children(func() {
+					ui.Text(c, lbl).FontSize(float32(tok.TextMeta)).Bold().TextColor(fg).SingleLine()
+				})
+				if pill.Clicked() {
+					s.OutlineOnlySteps = idx == 1
+				}
+			}
+		})
+	}
+
+	for _, item := range s.OutlineSteps {
+		item := item
+		if s.OutlineOnlySteps && !item.IsStep {
+			continue
+		}
+		depth := item.Depth
+		if s.OutlineOnlySteps {
+			depth = item.StepDepth
+		}
+		fg := tok.TextMuted
+		if item.Active {
+			fg = tok.Accent
+		} else if !item.IsStep && depth == 0 {
+			fg = tok.Text
+		} else if item.IsStep && item.StepDepth == 0 {
+			fg = tok.Text
+		}
+		leftPad := float32(tok.Spacing8) + float32(min(depth, 4))*float32(tok.Spacing12)
+		btn := ui.ButtonBase(c.Key("rd-step-"+item.ID)).FillWidth().Justify(ui.Start).
+			Padding(float32(tok.Spacing4)*1.25, float32(tok.Spacing8), float32(tok.Spacing4)*1.25, leftPad).
+			Radius(float32(tok.ControlRadius)).Label("跳至 " + item.Title)
 		bg := ui.Transparent
-		if step.Active {
+		if item.Active {
 			bg = tok.AccentSoftBg
 		} else if btn.Hovered() {
 			bg = tok.Text.Alpha(0.045)
@@ -126,20 +174,33 @@ func (s *Shell) renderDrawerOutline(c *ui.Context, tok theme.Tokens) {
 		theme.ApplyTactilePress(btn)
 		btn.Children(func() {
 			ui.Row(c).FillWidth().AlignItems(ui.Center).Gap(float32(tok.Spacing8)).Children(func() {
-				if step.Active {
+				if item.IsStep {
+					if item.StepDepth == 0 {
+						// Mainline step mini badge
+						ui.Row(c).Height(float32(tok.Spacing16)+2).Padding(0, float32(tok.Spacing4)*1.2).
+							AlignItems(ui.Center).Radius(float32(tok.ControlRadius)).
+							Background(tok.AccentSoftBg).Border(1, tok.Accent.Alpha(0.28)).Shrink(0).Children(func() {
+							ui.Text(c, item.Number).FontSize(float32(tok.TextMeta)-1).Bold().TextColor(tok.Accent).FontFeatures("tnum").SingleLine()
+						})
+					} else {
+						// Sub-step quiet tabular number
+						ui.Text(c, item.Number).FontSize(float32(tok.TextMeta)).Bold().TextColor(tok.TextMuted).FontFeatures("tnum").Shrink(0)
+					}
+				} else if item.Active {
 					ui.Box(c).Width(2).Height(float32(tok.Spacing12)).Radius(float32(tok.ControlRadius)).Background(tok.Accent)
-				} else {
-					ui.Box(c).Size(float32(tok.Spacing4), float32(tok.Spacing4)).Radius(float32(tok.ControlRadius)).Background(tok.TextMuted.Alpha(0.45))
 				}
-				components.Text(c, step.Title).FontSize(float32(tok.TextData)).TextColor(fg).
+				titleTxt := components.Text(c, item.Title).FontSize(float32(tok.TextData)).TextColor(fg).
 					SingleLine().Ellipsis("…").Grow(1).MinWidth(0)
-				if step.Meta != "" {
-					ui.Text(c, step.Meta).FontSize(float32(tok.TextMeta)).TextColor(tok.TextMuted).Shrink(0)
+				if !item.IsStep && depth == 0 {
+					titleTxt.Bold()
+				}
+				if item.Meta != "" {
+					ui.Text(c, item.Meta).FontSize(float32(tok.TextMeta)).TextColor(tok.TextMuted).FontFeatures("tnum").Shrink(0)
 				}
 			})
 		})
 		if btn.Clicked() && s.OnSelectOutlineStep != nil {
-			s.OnSelectOutlineStep(step.ID)
+			s.OnSelectOutlineStep(item.ID)
 		}
 	}
 }

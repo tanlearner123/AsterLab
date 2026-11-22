@@ -303,10 +303,7 @@ func DefaultStarterBlockWithPrefs(doc *Document, stepID, kind string, plateForma
 	case "prose":
 		return map[string]any{"kind": "prose", "id": id, "schema": 1, "tone": "plain", "body": "在此输入操作说明…"}
 	case "group_table":
-		return map[string]any{"kind": "group_table", "id": id, "schema": 1, "title": "实验分组", "rows": []any{
-			map[string]any{"id": id + "-ctrl", "name": "对照组", "role": "control", "independent_n": 3},
-			map[string]any{"id": id + "-treat", "name": "处理组", "role": "treatment", "independent_n": 3},
-		}}
+		return map[string]any{"kind": "group_table", "id": id, "schema": 1, "title": "实验分组", "rows": []any{}}
 	case "param_table":
 		return map[string]any{"kind": "param_table", "id": id, "schema": 1, "title": "实验条件", "rows": []any{
 			map[string]any{"key": "volume", "label": "反应体积", "value": 100, "unit": "uL", "record_actual": true},
@@ -329,7 +326,7 @@ func DefaultStarterBlockWithPrefs(doc *Document, stepID, kind string, plateForma
 	case "calculator":
 		blk := DefaultCalculatorPreset(doc, stepID, "dilution")
 		if excessPct > 0 {
-			blk["excess_pct"] = excessPct
+			blk["excess_ratio"] = float64(excessPct) / 100.0
 		}
 		return blk
 	case "timer":
@@ -380,63 +377,141 @@ func nextUniqueBlockID(doc *Document, base string) string {
 	}
 }
 
-// DefaultCalculatorPreset constructs a unified parameter-formula table preset.
+// CalculatorFormulaPreset describes one universal formula template inside calculator@1 (mode: formula).
+type CalculatorFormulaPreset struct {
+	ID           string
+	Label        string
+	Category     string
+	ShortFormula string
+}
+
+// CalculatorFormulaPresets returns the curated library of universal wet-lab formula presets.
+// Every preset compiles strictly to generic `calculator@1` (`mode: formula`) with zero custom schemas.
+func CalculatorFormulaPresets() []CalculatorFormulaPreset {
+	return []CalculatorFormulaPreset{
+		{ID: "dilution", Label: "稀释 C₁V₁ = C₂V₂", Category: "溶液稀释", ShortFormula: "V₁ = C₂V₂ / C₁"},
+		{ID: "ratio_dilution", Label: "比例稀释 (1:N)", Category: "溶液稀释", ShortFormula: "V₁ = V₂ / N"},
+		{ID: "serial_dilution", Label: "连续倍比稀释", Category: "溶液稀释", ShortFormula: "V_tr = V_step / (D - 1)"},
+		{ID: "weighing_wv", Label: "% w/v 称量配液", Category: "称量配液", ShortFormula: "m = C(%) × V × 10"},
+		{ID: "weighing", Label: "摩尔称量配液", Category: "称量配液", ShortFormula: "m = C · V · MW / 1000"},
+		{ID: "mastermix", Label: "孔板预混液 (含余量)", Category: "孔板与细胞", ShortFormula: "V_tot = N · V₀ · (1 + r)"},
+		{ID: "seeding", Label: "细胞接种稀释", Category: "孔板与细胞", ShortFormula: "V_cell = n_w · N / ρ"},
+		{ID: "rcf_rpm", Label: "离心力换算 (RCF ↔ RPM)", Category: "通用物理", ShortFormula: "RCF = 1.118e-5 · r · RPM²"},
+		{ID: "custom", Label: "自定义 LaTeX 公式", Category: "自由公式", ShortFormula: "自由输入变量与 LaTeX"},
+	}
+}
+
+// DefaultCalculatorPreset constructs a formula-centered LaTeX calculator preset.
 func DefaultCalculatorPreset(doc *Document, stepID, preset string) map[string]any {
 	id := nextUniqueBlockID(doc, stepID+"-calc")
+	plateWellsRef := func() any {
+		if doc != nil {
+			if g := BuildSciGraph(doc); g != nil {
+				if pl := g.PrimaryPlate(); pl != nil {
+					if pl.BlankWells > 0 {
+						return "@plate.sample_wells"
+					}
+					return "@plate.wells"
+				}
+			}
+		}
+		return 12
+	}
 	switch preset {
 	case "mastermix":
+		wellsVal := plateWellsRef()
+		wellsLabel := "有效实验孔数"
+		if wellsVal == "@plate.wells" {
+			wellsLabel = "反应孔数"
+		}
 		return map[string]any{
-			"kind": "calculator", "id": id, "schema": 1, "title": "预混液配制计算", "mode": "formula",
+			"kind": "calculator", "id": id, "schema": 1, "title": "孔板预混液配制", "mode": "formula",
 			"rows": []any{
-				map[string]any{"key": "n", "label": "反应数 (含余量)", "kind": "input", "value": 24, "unit": "孔"},
-				map[string]any{"key": "mix_per", "label": "单孔 2× Mix", "kind": "input", "value": 10, "unit": "uL"},
-				map[string]any{"key": "primer_per", "label": "单孔引物", "kind": "input", "value": 1.6, "unit": "uL"},
-				map[string]any{"key": "water_per", "label": "单孔无核酸酶水", "kind": "input", "value": 6.4, "unit": "uL"},
-				map[string]any{"key": "mix_tot", "label": "总 2× Mix", "kind": "formula", "formula": "n * mix_per", "unit": "uL"},
-				map[string]any{"key": "primer_tot", "label": "总引物", "kind": "formula", "formula": "n * primer_per", "unit": "uL"},
-				map[string]any{"key": "water_tot", "label": "总水", "kind": "formula", "formula": "n * water_per", "unit": "uL"},
+				map[string]any{"key": "N", "label": wellsLabel, "kind": "input", "value": wellsVal, "unit": "孔"},
+				map[string]any{"key": "V_0", "label": "单孔加样体积", "kind": "input", "value": 200, "unit": "uL"},
+				map[string]any{"key": "r", "label": "富余比例 (15% = 0.15)", "kind": "input", "value": 0.15, "unit": ""},
+				map[string]any{"key": "V_tot", "label": "预混液总体积", "kind": "formula", "formula": `N \times V_{0} \times (1 + r)`, "unit": "uL"},
 			},
 		}
-	case "molar":
+	case "ratio_dilution":
 		return map[string]any{
-			"kind": "calculator", "id": id, "schema": 1, "title": "摩尔配液称量", "mode": "formula",
+			"kind": "calculator", "id": id, "schema": 1, "title": "比例稀释配制 (1:N)", "mode": "formula",
 			"rows": []any{
-				map[string]any{"key": "conc_mm", "label": "目标浓度", "kind": "input", "value": 10, "unit": "mM"},
-				map[string]any{"key": "vol_ml", "label": "配制体积", "kind": "input", "value": 5, "unit": "mL"},
-				map[string]any{"key": "mw", "label": "分子量", "kind": "input", "value": 543.5, "unit": "g/mol"},
-				map[string]any{"key": "mass_mg", "label": "需称量溶质", "kind": "formula", "formula": "conc_mm * vol_ml * mw / 1000", "unit": "mg"},
+				map[string]any{"key": "N", "label": "稀释倍数 (1:N)", "kind": "input", "value": 1000, "unit": "倍"},
+				map[string]any{"key": "V_2", "label": "配制终体积", "kind": "input", "value": 5000, "unit": "uL"},
+				map[string]any{"key": "V_1", "label": "取母液体积", "kind": "formula", "formula": `\frac{V_{2}}{N}`, "unit": "uL"},
+				map[string]any{"key": "V_dil", "label": "补加稀释液", "kind": "formula", "formula": `V_{2} - \frac{V_{2}}{N}`, "unit": "uL"},
+			},
+		}
+	case "serial_dilution":
+		return map[string]any{
+			"kind": "calculator", "id": id, "schema": 1, "title": "连续倍比稀释", "mode": "formula",
+			"rows": []any{
+				map[string]any{"key": "D", "label": "单级稀释倍数 (如 2 或 10)", "kind": "input", "value": 2, "unit": "倍"},
+				map[string]any{"key": "V_step", "label": "每级终留存体积", "kind": "input", "value": 100, "unit": "uL"},
+				map[string]any{"key": "k", "label": "目标梯度级数", "kind": "input", "value": 6, "unit": "级"},
+				map[string]any{"key": "V_tr", "label": "逐级转移体积", "kind": "formula", "formula": `\frac{V_{step}}{D - 1}`, "unit": "uL"},
+				map[string]any{"key": "V_dil", "label": "每管预加稀释液", "kind": "formula", "formula": `V_{step}`, "unit": "uL"},
+			},
+		}
+	case "weighing_wv":
+		return map[string]any{
+			"kind": "calculator", "id": id, "schema": 1, "title": "% w/v 称量配液计算", "mode": "formula",
+			"rows": []any{
+				map[string]any{"key": "C_w", "label": "目标质量体积浓度", "kind": "input", "value": 5, "unit": "% w/v"},
+				map[string]any{"key": "V", "label": "配制终体积", "kind": "input", "value": 2, "unit": "mL"},
+				map[string]any{"key": "m", "label": "需称取干粉质量", "kind": "formula", "formula": `C_{w} \times V \times 10`, "unit": "mg"},
+			},
+		}
+	case "molar", "weighing":
+		return map[string]any{
+			"kind": "calculator", "id": id, "schema": 1, "title": "摩尔称量配液计算", "mode": "formula",
+			"rows": []any{
+				map[string]any{"key": "C", "label": "目标摩尔浓度", "kind": "input", "value": 10, "unit": "mM"},
+				map[string]any{"key": "V", "label": "配制终体积", "kind": "input", "value": 5, "unit": "mL"},
+				map[string]any{"key": "MW", "label": "分子量", "kind": "input", "value": 543.5, "unit": "g/mol"},
+				map[string]any{"key": "m", "label": "需称取溶质质量", "kind": "formula", "formula": `\frac{C \times V \times MW}{1000}`, "unit": "mg"},
 			},
 		}
 	case "seeding":
 		return map[string]any{
-			"kind": "calculator", "id": id, "schema": 1, "title": "细胞铺板计算", "mode": "formula",
+			"kind": "calculator", "id": id, "schema": 1, "title": "细胞接种稀释计算", "mode": "formula",
 			"rows": []any{
-				map[string]any{"key": "density", "label": "实测悬液密度", "kind": "input", "value": 500000, "unit": "cells/mL"},
-				map[string]any{"key": "per_well", "label": "每孔目标细胞数", "kind": "input", "value": 5000, "unit": "cells"},
-				map[string]any{"key": "well_ul", "label": "每孔接种体积", "kind": "input", "value": 100, "unit": "uL"},
-				map[string]any{"key": "wells", "label": "铺板总孔数 (含余量)", "kind": "input", "value": 60, "unit": "孔"},
-				map[string]any{"key": "susp_ml", "label": "需取细胞悬液", "kind": "formula", "formula": "per_well * wells / density", "unit": "mL"},
-				map[string]any{"key": "med_ml", "label": "补加培养基", "kind": "formula", "formula": "well_ul * wells / 1000 - per_well * wells / density", "unit": "mL"},
+				map[string]any{"key": "rho", "label": "实测悬液密度", "kind": "input", "value": 500000, "unit": "cells/mL"},
+				map[string]any{"key": "n_w", "label": "每孔目标细胞数", "kind": "input", "value": 50000, "unit": "cells"},
+				map[string]any{"key": "N", "label": "接种总孔数 (含余量)", "kind": "input", "value": plateWellsRef(), "unit": "孔"},
+				map[string]any{"key": "V_w", "label": "每孔接种体积", "kind": "input", "value": 500, "unit": "uL"},
+				map[string]any{"key": "V_cell", "label": "取细胞悬液", "kind": "formula", "formula": `\frac{n_{w} \times N}{\rho}`, "unit": "mL"},
+				map[string]any{"key": "V_med", "label": "补加培养基", "kind": "formula", "formula": `\frac{V_{w} \times N}{1000} - \frac{n_{w} \times N}{\rho}`, "unit": "mL"},
 			},
 		}
-	case "blank":
+	case "rcf_rpm":
 		return map[string]any{
-			"kind": "calculator", "id": id, "schema": 1, "title": "参数公式计算表", "mode": "formula",
+			"kind": "calculator", "id": id, "schema": 1, "title": "离心力换算 (RCF ↔ RPM)", "mode": "formula",
 			"rows": []any{
-				map[string]any{"key": "a", "label": "输入参数 A", "kind": "input", "value": 10, "unit": "uL"},
-				map[string]any{"key": "b", "label": "倍率 / 样本数", "kind": "input", "value": 3, "unit": ""},
-				map[string]any{"key": "res", "label": "计算输出", "kind": "formula", "formula": "a * b", "unit": "uL"},
+				map[string]any{"key": "r", "label": "转子有效半径", "kind": "input", "value": 10, "unit": "cm"},
+				map[string]any{"key": "RPM", "label": "设定转速", "kind": "input", "value": 1500, "unit": "rpm"},
+				map[string]any{"key": "RCF", "label": "相对离心力", "kind": "formula", "formula": `0.00001118 \times r \times RPM^{2}`, "unit": "×g"},
+			},
+		}
+	case "blank", "custom":
+		return map[string]any{
+			"kind": "calculator", "id": id, "schema": 1, "title": "自定义公式计算器", "mode": "formula",
+			"rows": []any{
+				map[string]any{"key": "C_1", "label": "输入参数 1", "kind": "input", "value": 5, "unit": "% w/v"},
+				map[string]any{"key": "V", "label": "配制体积", "kind": "input", "value": 2, "unit": "mL"},
+				map[string]any{"key": "m", "label": "计算结果", "kind": "formula", "formula": `C_{1} \times V \times 10`, "unit": "mg"},
 			},
 		}
 	default: // dilution
 		return map[string]any{
-			"kind": "calculator", "id": id, "schema": 1, "title": "母液稀释配制", "mode": "formula",
+			"kind": "calculator", "id": id, "schema": 1, "title": "溶液稀释配制 (C₁V₁ = C₂V₂)", "mode": "formula",
 			"rows": []any{
-				map[string]any{"key": "c1", "label": "母液浓度 (C1)", "kind": "input", "value": 10, "unit": "mM"},
-				map[string]any{"key": "c2", "label": "目标浓度 (C2)", "kind": "input", "value": 0.5, "unit": "mM"},
-				map[string]any{"key": "v2", "label": "配置总体积 (V2)", "kind": "input", "value": 1000, "unit": "uL"},
-				map[string]any{"key": "v1", "label": "取母液体积 (V1)", "kind": "formula", "formula": "v2 * c2 / c1", "unit": "uL"},
-				map[string]any{"key": "dil", "label": "补加稀释液", "kind": "formula", "formula": "v2 - v2 * c2 / c1", "unit": "uL"},
+				map[string]any{"key": "C_1", "label": "母液浓度", "kind": "input", "value": 100, "unit": "ug/mL"},
+				map[string]any{"key": "C_2", "label": "目标浓度", "kind": "input", "value": 0.05, "unit": "ug/mL"},
+				map[string]any{"key": "V_2", "label": "配制终体积", "kind": "input", "value": 5000, "unit": "uL"},
+				map[string]any{"key": "V_1", "label": "取母液体积", "kind": "formula", "formula": `\frac{C_{2} \times V_{2}}{C_{1}}`, "unit": "uL"},
+				map[string]any{"key": "V_dil", "label": "补加稀释液", "kind": "formula", "formula": `V_{2} - \frac{C_{2} \times V_{2}}{C_{1}}`, "unit": "uL"},
 			},
 		}
 	}

@@ -352,13 +352,13 @@ func specValidatorFor(kind string, schema int) func(map[string]any) error {
 					return fmt.Errorf("sample needs a sample_id")
 				}
 			case "prose-fields":
-				if textValue(data, "body") == "" {
-					return fmt.Errorf("prose needs non-empty body")
+				if _, ok := data["body"].(string); !ok {
+					return fmt.Errorf("prose needs body string")
 				}
 			case "group_table-fields":
 				rows, ok := data["rows"].([]any)
-				if !ok || len(rows) == 0 {
-					return fmt.Errorf("group_table needs at least one group row")
+				if !ok {
+					return fmt.Errorf("group_table needs rows")
 				}
 				seenIDs := map[string]bool{}
 				for _, raw := range rows {
@@ -597,8 +597,8 @@ func specValidatorFor(kind string, schema int) func(map[string]any) error {
 					return fmt.Errorf("subflow needs title")
 				}
 				items, ok := data["items"].([]any)
-				if !ok || len(items) == 0 {
-					return fmt.Errorf("subflow needs at least one item")
+				if !ok {
+					return fmt.Errorf("subflow needs items")
 				}
 				for _, raw := range items {
 					it, _ := raw.(map[string]any)

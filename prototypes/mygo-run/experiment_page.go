@@ -13,6 +13,7 @@ import (
 	"github.com/oneo-me/onevra/source/components"
 	"github.com/oneo-me/onevra/source/icons/lucide"
 
+	"asterlab-mygo-prototype/internal/astercmd"
 	"asterlab-mygo-prototype/internal/astercore"
 	"asterlab-mygo-prototype/internal/asterdoc"
 	"asterlab-mygo-prototype/internal/shell"
@@ -208,26 +209,28 @@ func (a *app) renderVaultTabContent(c *ui.Context, pane *shell.PaneNode, tab she
 				a.refreshVaultTreeAndCalendar()
 			}
 			lastStepID := ""
-			afterIdx := -1
 			if curLD.Parsed != nil {
 				for _, m := range curLD.Parsed.Modules {
 					if m.Kind == "step" {
 						lastStepID = m.ID
-						if blks, ok := m.Data["blocks"].([]any); ok {
-							afterIdx = len(blks) - 1
-						}
 					}
 				}
 			}
-			ensureTargetStep := func() string {
-				if lastStepID != "" {
-					return lastStepID
+			runMobileCmd := func(cmdID string, args map[string]any, toastTitle string) {
+				res := astercmd.ExecuteBatch(curLD.Source, astercmd.BatchRequest{
+					Mode:        astercmd.ModeEdit,
+					PlateFormat: a.shell.DefaultPlateFormat,
+					ExcessPct:   a.shell.DefaultExcessPct,
+					Operations:  []astercmd.Operation{{CommandID: cmdID, Args: args}},
+				})
+				if res.OK {
+					applyDoc(res.NextSource)
+					if toastTitle != "" {
+						c.AddToast(ui.Toast{Title: toastTitle, Type: components.ToastSuccess})
+					}
+				} else if res.Error != nil {
+					c.AddToast(ui.Toast{Title: res.Error.Message, Type: components.ToastWarning})
 				}
-				if next, createdID, err := asterdoc.AddStepInSource(curLD.Source, "步骤 1"); err == nil {
-					applyDoc(next)
-					return createdID
-				}
-				return ""
 			}
 			switch action {
 			case "undo":
@@ -239,45 +242,25 @@ func (a *app) renderVaultTabContent(c *ui.Context, pane *shell.PaneNode, tab she
 					a.shell.OnRedo()
 				}
 			case "add_step":
-				cnt := 1
-				if curLD.Parsed != nil {
-					for _, m := range curLD.Parsed.Modules {
-						if m.Kind == "step" {
-							cnt++
-						}
-					}
-				}
-				if next, _, err := asterdoc.AddStepInSource(curLD.Source, fmt.Sprintf("步骤 %d", cnt)); err == nil {
-					applyDoc(next)
-					c.AddToast(ui.Toast{Title: fmt.Sprintf("已添加步骤 %d", cnt), Type: components.ToastSuccess})
-				}
+				runMobileCmd("step.create", map[string]any{"preset": "blank"}, "已添加空白步骤")
 			case "add_checklist":
-				sid := ensureTargetStep()
-				if sid != "" {
-					blk := asterdoc.DefaultStarterBlockWithPrefs(curLD.Parsed, sid, "checklist", a.shell.DefaultPlateFormat, a.shell.DefaultExcessPct)
-					if next, err := asterdoc.InsertStepBlockInSource(curLD.Source, sid, afterIdx, blk); err == nil {
-						applyDoc(next)
-						c.AddToast(ui.Toast{Title: "已插入检查清单", Type: components.ToastSuccess})
-					}
+				args := map[string]any{"kind": "checklist"}
+				if lastStepID != "" {
+					args["step_id"] = lastStepID
 				}
+				runMobileCmd("block.insert", args, "已插入检查清单")
 			case "add_param":
-				sid := ensureTargetStep()
-				if sid != "" {
-					blk := asterdoc.DefaultStarterBlockWithPrefs(curLD.Parsed, sid, "param_table", a.shell.DefaultPlateFormat, a.shell.DefaultExcessPct)
-					if next, err := asterdoc.InsertStepBlockInSource(curLD.Source, sid, afterIdx, blk); err == nil {
-						applyDoc(next)
-						c.AddToast(ui.Toast{Title: "已插入参数表", Type: components.ToastSuccess})
-					}
+				args := map[string]any{"kind": "param_table"}
+				if lastStepID != "" {
+					args["step_id"] = lastStepID
 				}
+				runMobileCmd("block.insert", args, "已插入参数表")
 			case "add_plate":
-				sid := ensureTargetStep()
-				if sid != "" {
-					blk := asterdoc.DefaultStarterBlockWithPrefs(curLD.Parsed, sid, "plate", a.shell.DefaultPlateFormat, a.shell.DefaultExcessPct)
-					if next, err := asterdoc.InsertStepBlockInSource(curLD.Source, sid, afterIdx, blk); err == nil {
-						applyDoc(next)
-						c.AddToast(ui.Toast{Title: fmt.Sprintf("已插入 %v 孔板", blk["format"]), Type: components.ToastSuccess})
-					}
+				args := map[string]any{"format": a.shell.DefaultPlateFormat}
+				if lastStepID != "" {
+					args["step_id"] = lastStepID
 				}
+				runMobileCmd("plate.create", args, "已插入孔板")
 			case "open_timer":
 				a.shell.RightTab = 1
 				a.shell.MobileDrawer = "outline"
@@ -338,13 +321,8 @@ func (a *app) renderVaultTabContent(c *ui.Context, pane *shell.PaneNode, tab she
 			a.shell.StatusWarnLabel = ""
 		}
 		if ld.Parsed != nil {
-			stepsN := 0
-			for _, m := range ld.Parsed.Modules {
-				if m.Kind == "step" {
-					stepsN++
-				}
-			}
-			a.shell.StatusMetaLabel = fmt.Sprintf("%d 步骤 · %d 模块", stepsN, len(ld.Parsed.Modules))
+			stepTree := asterdoc.ParseStepTree(ld.Source, ld.Parsed)
+			a.shell.StatusMetaLabel = fmt.Sprintf("%d 步骤 · %d 模块", len(stepTree.Flat), len(ld.Parsed.Modules))
 		}
 	}
 
@@ -362,7 +340,7 @@ func (a *app) renderVaultTabContent(c *ui.Context, pane *shell.PaneNode, tab she
 				})
 
 				if ld.ParseErr != nil {
-					components.Badge(c, "待语法闭合", components.BadgeOptions{Tone: components.BadgeWarning})
+					components.Badge(c, "待语法闭合", components.BadgeOptions{Tone: components.BadgeWarning}).AlignSelf(ui.Center)
 				}
 
 				if tab.Mode == shell.ModeSource {
@@ -370,17 +348,18 @@ func (a *app) renderVaultTabContent(c *ui.Context, pane *shell.PaneNode, tab she
 						setTabMode(shell.ModeEdit)
 						tab.Mode = shell.ModeEdit
 					}
-				} else if tab.Mode == shell.ModeRead {
-					edBtn := components.IconButton(c, lucide.PenLine(), "切换到编辑态 (Ctrl+E)", components.IconButtonCompact)
+				} else if tab.Mode == shell.ModeLab {
+					components.Badge(c, "实验模式 · 防误触", components.BadgeOptions{Tone: components.BadgeAccent}).AlignSelf(ui.Center)
+					edBtn := components.IconButton(c, lucide.PenLine(), "返回编辑模式 (Ctrl+E)", components.IconButtonCompact)
 					if edBtn.Clicked() {
 						setTabMode(shell.ModeEdit)
 						tab.Mode = shell.ModeEdit
 					}
 				} else {
-					rdBtn := components.IconButton(c, lucide.BookOpen(), "切换到阅读态 (Ctrl+E)", components.IconButtonCompact)
-					if rdBtn.Clicked() {
-						setTabMode(shell.ModeRead)
-						tab.Mode = shell.ModeRead
+					labBtn := components.IconButton(c, lucide.FlaskConical(), "切换到实验模式 · 防误触执行 (Ctrl+E)", components.IconButtonCompact)
+					if labBtn.Clicked() {
+						setTabMode(shell.ModeLab)
+						tab.Mode = shell.ModeLab
 					}
 				}
 
@@ -567,6 +546,7 @@ func (a *app) renderVaultTabContent(c *ui.Context, pane *shell.PaneNode, tab she
 		v.SearchQuery = *findQuery
 		v.BaseDir = a.vault.Root
 		v.MobileCompact = mobileLayout
+		v.AltHoverPreviewQuery = a.altHoverPreviewQuery
 		if a.shell != nil {
 			v.DefaultPlateFormat = a.shell.DefaultPlateFormat
 			v.DefaultExcessPct = a.shell.DefaultExcessPct
@@ -576,12 +556,129 @@ func (a *app) renderVaultTabContent(c *ui.Context, pane *shell.PaneNode, tab she
 			a.scrollToStepID = ""
 		}
 		v.PantryLocationMap = a.buildPantryLocationMap()
-		if tab.Mode == shell.ModeRead {
+		if tab.Mode == shell.ModeLab {
 			v.Mode = asterdoc.ModeProtocol
-			v.ReadOnly = false // Checkboxes and timers stay interactive in Read mode!
+			v.LabMode = true
+			v.ReadOnly = false // Reserved execution slots & blank note areas stay interactive in Lab Mode!
 		} else {
 			v.Mode = asterdoc.ModeDesign
+			v.LabMode = false
 			v.ReadOnly = false
+		}
+		// Wire unified Semantic Command Bus (astercmd) for Slash menus, `+` buttons, and well photo linking
+		cmdMode := astercmd.ModeEdit
+		if v.LabMode {
+			cmdMode = astercmd.ModeLab
+		}
+		regEntries := astercmd.DefaultRegistry().SlashEntries("top_level", cmdMode)
+		slashItems := make([]asterdoc.SlashCommandItem, 0, len(regEntries))
+		for _, re := range regEntries {
+			slashItems = append(slashItems, asterdoc.SlashCommandItem{
+				CommandID:   re.CommandID,
+				Label:       re.Label,
+				Detail:      re.Detail,
+				Slash:       re.Slash,
+				Kind:        re.Kind,
+				Preset:      re.Preset,
+				SearchTerms: re.SearchTerms,
+			})
+		}
+		v.SlashItems = slashItems
+		if a.shell != nil {
+			var targets []string
+			for _, f := range a.shell.VaultFiles {
+				targets = append(targets, f.RelPath)
+			}
+			v.VaultCompletionTargets = targets
+		}
+		runSlashCmd := func(item asterdoc.SlashCommandItem, stepID string, insertOffset int) {
+			if item.CommandID == "asset.embed" {
+				paths, pErr := mygo.Dialog.Open(mygo.OpenDialogOptions{
+					Parent: mygo.FocusedWindow(),
+					Title:  "选择要嵌入的图片或实验附件",
+				})
+				if pErr != nil || len(paths) == 0 {
+					return
+				}
+				refPath := paths[0]
+				if a.shell == nil || a.shell.AutoArchiveAssets {
+					if rel, impErr := a.vault.ImportAssetFile(paths[0]); impErr == nil {
+						refPath = rel
+					}
+				}
+				res := astercmd.ExecuteBatch(ld.Source, astercmd.BatchRequest{
+					Mode: cmdMode,
+					Operations: []astercmd.Operation{{
+						CommandID: "asset.embed",
+						Args:      map[string]any{"asset": refPath, "at_offset": insertOffset},
+					}},
+				})
+				if res.OK {
+					applyLiveSource(res.NextSource)
+				}
+				return
+			}
+			args := map[string]any{}
+			if stepID != "" {
+				args["step_id"] = stepID
+			} else if insertOffset >= 0 {
+				args["at_offset"] = insertOffset
+			}
+			if item.Kind != "" && item.CommandID == "block.insert" {
+				args["kind"] = item.Kind
+			}
+			if item.Preset != "" && item.CommandID == "step.create" {
+				args["preset"] = item.Preset
+			}
+			if item.CommandID == "doc.append_note" {
+				args["text"] = "现场记录："
+			}
+			res := astercmd.ExecuteBatch(ld.Source, astercmd.BatchRequest{
+				Mode:        cmdMode,
+				PlateFormat: v.DefaultPlateFormat,
+				ExcessPct:   v.DefaultExcessPct,
+				Operations:  []astercmd.Operation{{CommandID: item.CommandID, Args: args}},
+			})
+			if res.OK {
+				applyLiveSource(res.NextSource)
+				if stepID == "" {
+					v.RequestFocusTailProse()
+				}
+			} else if res.Error != nil {
+				c.AddToast(ui.Toast{Title: res.Error.Message, Type: components.ToastWarning})
+			}
+		}
+		v.OnExecuteSlash = runSlashCmd
+		v.OnAttachPhotoToWell = func(plateID string, wells []string) {
+			paths, pErr := mygo.Dialog.Open(mygo.OpenDialogOptions{
+				Parent: mygo.FocusedWindow(),
+				Title:  fmt.Sprintf("为 %s (%s) 选择实验照片", plateID, strings.Join(wells, ",")),
+			})
+			if pErr != nil || len(paths) == 0 {
+				return
+			}
+			refPath := paths[0]
+			if a.shell == nil || a.shell.AutoArchiveAssets {
+				if rel, impErr := a.vault.ImportAssetFile(paths[0]); impErr == nil {
+					refPath = rel
+				}
+			}
+			targetSpec := fmt.Sprintf("@%s:%s", plateID, strings.Join(wells, ","))
+			res := astercmd.ExecuteBatch(ld.Source, astercmd.BatchRequest{
+				Mode: cmdMode,
+				Operations: []astercmd.Operation{{
+					CommandID: "asset.embed",
+					Args: map[string]any{
+						"asset":   refPath,
+						"targets": []string{targetSpec},
+						"role":    "obs",
+					},
+				}},
+			})
+			if res.OK {
+				applyLiveSource(res.NextSource)
+				c.AddToast(ui.Toast{Title: fmt.Sprintf("已关联照片到 %s", targetSpec), Type: components.ToastSuccess})
+			}
 		}
 		v.OnChange = func(nextSrc string) {
 			applyLiveSource(nextSrc)
@@ -786,17 +883,33 @@ func (a *app) renderVaultTabContent(c *ui.Context, pane *shell.PaneNode, tab she
 			}
 		}
 
-		// Sync outline steps for focused pane
+		// Sync unified Document Outline (plain chapters + orthogonal nested steps)
 		if pane.ID == a.shell.ActivePaneID {
+			docOutline := asterdoc.ParseDocumentOutline(ld.Source, doc)
 			var outline []shell.OutlineItem
-			for _, m := range doc.Modules {
-				if m.Kind == "step" {
-					outline = append(outline, shell.OutlineItem{
-						ID:     m.ID,
-						Title:  firstNonEmpty(moduleString(m.Data, "title"), m.ID),
-						Active: m.ID == a.designSelected,
-					})
+			for _, on := range docOutline {
+				meta := ""
+				if on.IsStep {
+					if on.RunningTimers > 0 {
+						meta = "计时中"
+					} else if v.LabMode && on.ChecksTotal > 0 {
+						if on.ChecksDone >= on.ChecksTotal {
+							meta = "✓"
+						} else {
+							meta = fmt.Sprintf("%d/%d", on.ChecksDone, on.ChecksTotal)
+						}
+					}
 				}
+				outline = append(outline, shell.OutlineItem{
+					ID:        on.ID,
+					Title:     on.Title,
+					IsStep:    on.IsStep,
+					Number:    on.Number,
+					Depth:     on.Depth,
+					StepDepth: on.StepDepth,
+					Meta:      meta,
+					Active:    on.ID == a.designSelected,
+				})
 			}
 			a.shell.OutlineSteps = outline
 		}
@@ -808,6 +921,10 @@ func (a *app) renderVaultTabContent(c *ui.Context, pane *shell.PaneNode, tab she
 					ScrollbarInsets(a.shell.MobileTopReserve(c), 0, a.shell.MobileBottomReserve(c), 0)
 			}
 			padTop := float32(tok.Spacing24)
+			if !mobileLayout {
+				// Reserve breathing room for the centered floating pure-icon toolbar at top of canvas
+				padTop = float32(tok.Spacing48) + float32(tok.Spacing16)
+			}
 			padH := float32(tok.Spacing24)
 			padBot := float32(tok.Spacing48)
 			if mobileLayout && a.shell != nil {
@@ -1102,38 +1219,16 @@ func (a *app) renderVaultTabContent(c *ui.Context, pane *shell.PaneNode, tab she
 							})
 						}
 
-						// Clear full-width Add Step action outside all Step Cards
-						if tab.Mode == shell.ModeEdit {
-							addStepBtn := ui.ButtonBase(c.Key("add-new-step-bar")).FillWidth().
-								Padding(float32(tok.Spacing12), float32(tok.Spacing16)).
-								Radius(float32(tok.PanelRadius)).
-								Background(tok.Elevated.Alpha(0.45)).
-								Border(1.5, tok.BorderStrong).BorderStyle(ui.BorderDashed).
-								Label("添加新步骤")
-							if addStepBtn.Hovered() {
-								addStepBtn.Background(tok.AccentSoftBg.Alpha(0.45)).BorderColor(tok.Accent)
-							}
-							addStepBtn.Children(func() {
-								ui.Row(c).FillWidth().Center().Gap(float32(tok.Spacing8)).Children(func() {
-									ui.Icon(c, lucide.Plus()).Size(float32(tok.Spacing16), float32(tok.Spacing16)).TextColor(tok.Accent)
-									ui.Text(c, "添加新步骤").FontSize(float32(tok.TextBody)).Bold().TextColor(tok.Text)
-								})
-							})
-							if addStepBtn.Clicked() {
-								stepNum := 1
-								for _, m := range doc.Modules {
-									if m.Kind == "step" {
-										stepNum++
-									}
-								}
-								if next, _, err := asterdoc.AddStepInSource(ld.Source, fmt.Sprintf("步骤 %d", stepNum)); err == nil {
-									applyLiveSource(next)
-								}
-							}
-						}
 					})
 				})
 			})
+			// Centered top floating pure-icon toolbar on desktop/tablet (locked in-place during Lab Mode)
+			if !mobileLayout {
+				ui.Row(c.Key("doc-ftb-anchor")).Absolute().Top(float32(tok.Spacing12)).Left(0).Right(0).
+					Justify(ui.Center).HitTest(func(float32, float32, ui.Rect) bool { return false }).Children(func() {
+					v.RenderFloatingToolbar(c, tab.Mode == shell.ModeLab)
+				})
+			}
 			v.RenderPlateOverlay(c)
 		})
 	})

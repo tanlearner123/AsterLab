@@ -219,7 +219,7 @@ func TestObsidianVaultPantryAnd27InchVisualAudit(t *testing.T) {
 	})
 	sh.SetRightDrawer(false, 0)
 
-	// Verify the release blank template renders cleanly with 2 empty steps + dashed dropzones.
+	// Verify the release blank template renders cleanly as a frameless whitepaper live-markdown canvas.
 	sh.OpenFileInPane(sh.ActivePaneID, "templates/空白实验.asterml", "空白实验", shell.ModeEdit, true)
 	renderVisualPNGSteps(t, outDir, "desktop_27inch_blank_light.png", 2560, 1440, false, func(c *ui.Context) {
 		sh.RenderSplitView(c)
@@ -227,8 +227,8 @@ func TestObsidianVaultPantryAnd27InchVisualAudit(t *testing.T) {
 		st.Frame()
 		st.Advance(200 * time.Millisecond)
 		st.Frame()
-		if !st.HasText("步骤 1") || !st.HasText("步骤 2") || !st.HasText("点击此处添加组件") || !st.HasText("添加新步骤") {
-			t.Fatalf("expected 2 empty steps with dashed dropzones in blank template, got: %q", st.Texts())
+		if !st.HasText("空白实验") || !st.HasText("科学笔记正文") || !st.HasText("0 步骤 · 0 模块") {
+			t.Fatalf("expected clean whitepaper blank template canvas, got: %q", st.Texts())
 		}
 	})
 

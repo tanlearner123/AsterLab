@@ -7,32 +7,38 @@ Agent 与外部自动化脚本直接通过 **Pure-Go Vault-Native CLI（`cmd/ast
 源码位于 [cmd/asterlab/main.go](../../prototypes/mygo-run/cmd/asterlab/main.go)，通过 `--vault <dir>` 指定实验室目录（默认读取 `vault.DefaultVaultDir()` / `ASTERLAB_VAULT_DIR`）：
 
 ```powershell
-# 列出可用工具清单
+# 列出可用工具清单 & 人类/Agent 共用的 Semantic Command 注册表
 go run ./cmd/asterlab tools --json
+go run ./cmd/asterlab cmd.list
+go run ./cmd/asterlab cmd.describe plate.assign_wells
 
-# 按状态/标签筛选 Vault 中的实验列表
+# 按状态/标签筛选 Vault 中的实验列表 & 全库全文搜索
 go run ./cmd/asterlab --vault C:\LabVault vault.list --status in_progress --tag cck8
-
-# 全库全文搜索
 go run ./cmd/asterlab --vault C:\LabVault vault.search "OD450"
 
-# 读取实验 Frontmatter 与 step 模块树
-go run ./cmd/asterlab --vault C:\LabVault asterdoc.read 2026/cck8.asterml
+# 读取实验 Frontmatter、稳定对象 ID 列表、统一行内科学关联（含孔板/组别上下文）及校验诊断
+go run ./cmd/asterlab --vault C:\LabVault asterdoc.read 2026/huvec.asterml
+go run ./cmd/asterlab --vault C:\LabVault asterdoc.objects 2026/huvec.asterml
+go run ./cmd/asterlab --vault C:\LabVault asterdoc.relations 2026/huvec.asterml
+go run ./cmd/asterlab --vault C:\LabVault asterdoc.validate 2026/huvec.asterml
 
-# 运行 Pure-Go AsterCore 分级科学诊断（ARRIVE 2.0 / 对照组 / 浓度越界）
+# 预览 & 原子执行批量 Semantic Commands（带 expected_hash 并发检查、client_ref 批内引用、idempotency_key 幂等重放）
+go run ./cmd/asterlab --vault C:\LabVault asterdoc.preview 2026/huvec.asterml --ops '{"expected_hash":"sha256:...","operations":[...]}'
+go run ./cmd/asterlab --vault C:\LabVault asterdoc.exec 2026/huvec.asterml --ops '{"expected_hash":"sha256:...","idempotency_key":"op-1","operations":[...]}'
+
+# 运行 Pure-Go AsterCore 分级科学诊断（ARRIVE 2.0 / 对照组 / 浓度越界）与确定性统计分析
 go run ./cmd/asterlab --vault C:\LabVault asterdoc.assess 2026/cck8.asterml
-
-# 运行确定性 CCK-8 / RT-qPCR ΔΔCq / 描述性统计分析
 go run ./cmd/asterlab --vault C:\LabVault asterdoc.analyze 2026/cck8.asterml
 ```
 
+- **统一读写闭环契约**：Agent 通过 `cmd.list` 发现命令、`asterdoc.objects` / `asterdoc.relations` 读取对象稳定 ID 与 `docHash`、`asterdoc.preview` 预演 diff、`asterdoc.exec` 原子提交（校验 `expected_hash` 防止覆盖人工编辑，且支持同一批内用 `client_ref` 连接新建分组、孔板、孔位与图片关联），全程无需手写 YAML 围栏。
 - **单行 JSON stdout 契约**：所有子命令向标准输出打印单行结构化 JSON（包含 `ok` 及对应结果或 `code`/`error`）。
 - **固定退出码语义**：
   - `0`：成功（对 `asterdoc.assess` 表示无 `blocking` 阻断问题）
   - `2`：参数或子命令用法错误
   - `3`：Vault 目录或目标 `.asterml` 文件不存在
-  - `4`：科学诊断阻断（`asterdoc.assess` 检测到 `SeverityBlocking` 问题，如目标浓度高于母液）
-  - `5`：`.asterml` 语法解析失败
+  - `4`：阻断或并发冲突（`asterdoc.assess` 检测到 `SeverityBlocking`，或 `asterdoc.exec` 检测到 `CONFLICT` 哈希冲突）
+  - `5`：`.asterml` 语法解析失败、关系校验失败或命令参数非法
 
 ## 2. `asterlab://` URI 深度链接路由
 

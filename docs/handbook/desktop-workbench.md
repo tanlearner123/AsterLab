@@ -6,10 +6,12 @@
 
 1. **左栏（40px Ribbon + Vault 文件树）**
    - 文件树依据显式 `depth` 绘制纵向缩进引导线，支持 `F2` 内联重命名（同步自动重写全库 `[[wikilink]]` 与 `repeat_of`）、文件右键菜单，以及直接将 `.asterml` 文件拖入日程改期或拖入编辑区边缘拆屏。
-2. **主区（`PaneNode` 平权分屏树 + 底部状态栏）**
-   - 任意叶窗格均可平权托管 `实验日程`、`储藏室货架` 或 `.asterml` 文档（`编辑 | 阅读 | 源码`），拖拽页签至窗格四周 25% 热区即可通过 `LiquidSplitTransition` 动态四向分屏。
-   - 文档页采用简洁单行面包屑头 + 阅读/编辑切换 + 页内查找（`Ctrl+F`）+ 自适应阅读列宽（`760px` 正文 / `940px` 宽孔板与数据表）。
-   - 底部常驻 `24px` **Obsidian 风格状态栏**，实时展示保存状态（`实时已保存` / 语法提醒）、当前步骤与模块计数、可点击的**全库运行中计时器角标**、模式名称与全局命令快捷键提示。
+2. **主区（`PaneNode` 平权分屏树 + Obsidian Live Preview + 底部状态栏）**
+   - 任意叶窗格均可平权托管 `实验日程`、`储藏室货架` 或 `.asterml` 文档（**`编辑 | 实验模式（防误触） | 源码`**），拖拽页签至窗格四周 25% 热区即可通过 `LiquidSplitTransition` 动态四向分屏。
+   - **纯白纸起点与 Obsidian Live Preview**：新建实验打开即空白 Markdown 画布（零预置步骤）；基于 `mygo@v0.10.0` 原生 `editor` 实现光标行露源码、非光标行渲染标题/粗体/行内可点复选框/科学关联胶囊，并支持行首 `/` 命令、`{@` 目标补全、`[[` 双链补全与统一悬浮上下文卡。
+   - **实验模式（`ModeLab`，`Ctrl+E` 一键切换）**：锁定既有方案正文与模块结构防止湿实验误触，仅开放预留执行槽位（勾选、计时、实测偏离、读数矩阵、孔板异常孔与拍图关联），并在文末常驻**实验空白补记区**允许随时自由补记。
+   - 文档页采用简洁单行面包屑头 + 实验/编辑模式切换 + 页内查找（`Ctrl+F`）+ 自适应阅读列宽（`760px` 正文 / `940px` 宽孔板与数据表）。
+   - 底部常驻 `24px` **Obsidian 风格状态栏**，实时展示保存状态（`实时已保存` / 语法提醒）、当前步骤与模块计数、可点击的**全库运行中计时器角标**、模式名称（`编辑模式` / `实验模式（防误触）` / `源码模式`）与全局命令快捷键提示。
 3. **右伴侣抽屉（三页签，默认折叠）**
    - 收拢与实验直接相关的三类工具：**「步骤大纲」**、**「速算与计时（含跨 Vault 实时计时器与跳转）」**、**「关联与诊断（双向链接/复现谱系 + AsterCore 分级诊断）」**。
 4. **全库全文搜索与命令面板**
@@ -26,9 +28,19 @@
 |---|---|---|
 | ![全局全文搜索 Dark](../sdk/evidence/v2-visual-catalog/workbench_global_search_dark.png) | ![右抽屉关联与诊断 Light](../sdk/evidence/v2-visual-catalog/companion_drawer_links_diagnostics_light.png) | ![科学分析汇总 Light](../sdk/evidence/v2-visual-catalog/unified_live_analysis_summary_light.png) |
 
-| UnifiedLive「编辑」态 | UnifiedLive「阅读」态 | UnifiedLive「源码」态 |
+| UnifiedLive「编辑」态 | UnifiedLive「实验模式（防误触）」 | UnifiedLive「源码」态 |
 |---|---|---|
-| ![UnifiedLive 编辑态](../sdk/evidence/v2-visual-catalog/unified_live_edit_light.png) | ![UnifiedLive 阅读态](../sdk/evidence/v2-visual-catalog/unified_live_read_light.png) | ![UnifiedLive 源码态](../sdk/evidence/v2-visual-catalog/unified_live_source_light.png) |
+| ![UnifiedLive 编辑态](../sdk/evidence/v2-visual-catalog/unified_live_edit_light.png) | ![UnifiedLive 实验模式](../sdk/evidence/v2-visual-catalog/unified_live_read_light.png) | ![UnifiedLive 源码态](../sdk/evidence/v2-visual-catalog/unified_live_source_light.png) |
+
+## Obsidian Live Preview、纯白纸起点、行内关联卡与实验模式实拍
+
+| 纯白纸空白文档（零预置步骤） | Obsidian Live Preview 混排（Light） | Obsidian Live Preview 混排（Dark） |
+|---|---|---|
+| ![纯白纸文档](../sdk/evidence/v2-visual-catalog/unified_blank_whitepaper_light.png) | ![Live Preview Light](../sdk/evidence/v2-visual-catalog/unified_live_preview_huvec_light.png) | ![Live Preview Dark](../sdk/evidence/v2-visual-catalog/unified_live_preview_huvec_dark.png) |
+
+| 行内图片关联卡 `![[...]]{@plate:A1 6h fov=1}` | 实验模式（锁原文 + 开放预留槽位 + 空白补记区） |
+|---|---|
+| ![行内图片关联卡](../sdk/evidence/v2-visual-catalog/unified_embed_relation_card_light.png) | ![实验模式防误触](../sdk/evidence/v2-visual-catalog/unified_lab_mode_huvec_light.png) |
 
 | 方案灯箱放大 (`figure@1`) | Notebook ELN 双栏对照 |
 |---|---|

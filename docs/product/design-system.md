@@ -23,13 +23,26 @@
 - `theme.GradientRampColor(tNorm, dark)`：孔板数值浓度梯度因子的连续单调色阶渐变（图例按浓度从高到低排序）；
 - `theme.WellRoleColor(role, dark)`：孔位对照角色语义色（`sample` / `standard` / `ntc` / `blank` / `positive_control` / `negative_control` / `vehicle`）。
 
-## 2. 间距体系
+## 2. 间距、行距与正文/组件区分体系（强制设计语言）
 
-- 基础单位 4；只用 4 / 8 / 12 / 16 / 24 / 32 / 48。
-- 语义嵌套：容器内边距 ≥ 子元素间距；同一层嵌套的上下左右取同一档。
-- 相邻同级元素均分剩余空间，不要在个别兄弟上加补偿 padding。
-- 行内文字与控件间隔用 4/8；区块之间用 16/24；页面级分隔用 32/48。
-- 900×600 下先压缩 32/48 到 24/32，不要压缩到 4 以下。
+- **4px 基准间距**：只用 `Spacing4 (4)`、`Spacing8 (8)`、`Spacing12 (12)`、`Spacing16 (16)`、`Spacing24 (24)`、`Spacing32 (32)`、`Spacing48 (48)`。
+- **统一行间距标准（Typography Rhythm）**：
+  - 自由 Markdown 正文（`LiveMarkdownEditor`）：`LineHeight = 1.65`（中文/英文混排舒适读感）；
+  - Markdown 标题（`#` ~ `####`）：`LineHeight = 1.4`；
+  - 表格/元数据行：单行 `SingleLine()` + `FontFeatures("tnum")` 数值对齐。
+- **统一块间距标准（Vertical Block Rhythm）**：
+  - 顶层文档流（正文 ↔ 组件、组件 ↔ 组件）：统一 `Spacing16 (16px)`；
+  - 组件内部骨架（标题头 ↔ 分割线 ↔ 内容体）：统一 `Spacing12 (12px)`；
+  - 组件内同级控件/表格行间距：统一 `Spacing8 (8px)`；图标与文字间距：`Spacing8 (8px)` 或 `Spacing4 (4px)`；
+  - 页面级分隔：`Spacing32 / Spacing48`（900×600 下压至 `Spacing24 / Spacing32`，绝不低于 `Spacing4`）。
+- **普通 Markdown 正文 vs. 结构化科学组件的视觉区分（一眼可辨）**：
+  - **普通 Markdown 正文（纸面层 Paper Layer）**：直接铺在 `tok.Canvas` 纸面上，**零卡片底色、零外边框、零标题头栏**，呈现无干扰的 Obsidian 纸面书写体验。
+  - **结构化科学组件（模块卡片层 Module Surface Layer）**：所有顶层科学组件（`group_table`、`plate`、`param_table`、`data_table`、`calculator`、`figure`、`attachment`、`subflow`、`embed_card`）统一由 `renderUnifiedModuleShell` 承载：
+    - 表面：`Background(tok.Surface)` + `Border(1, tok.Border)` + `Radius(tok.PanelRadius)` + `Padding(tok.Spacing12, tok.Spacing16)`；
+    - **统一头部骨架（所有组件必须一致，严禁有的有图标有的没图标）**：
+      `[16px 语义图标 (tok.Accent)]` + `[可编辑标题 (TextSection Bold)]` + `[Spacer]` + `[右对齐计数/状态摘要 (TextMeta tnum)]` + `[可选紧凑图标动作，如放大/源码]` → 下接 `1px` 发丝线 `tok.Border.Alpha(0.55)` → 组件详情区；
+    - 嵌套于 `step@1` 步骤卡片内的子块自动省略外层重边框，仅保留统一的 `[图标 + 标题 + 摘要] + 发丝线 + 内容区`，严禁卡片套重卡片。
+- **语义嵌套**：容器内边距 ≥ 子元素间距；同一层嵌套的上下左右取同一档；相邻同级元素均分剩余空间。
 
 ## 3. 圆角
 
@@ -186,4 +199,24 @@ grep -rn "Radius([0-9]" prototypes/mygo-run --include=*.go                      
 1. 禁止从 `Scale: 0` 缩放弹出（最小起始缩放 `0.95 ~ 0.98`）；退场时长必须短于进场时长（`100ms ~ 120ms`）；初始常驻标签禁止挂 `Enter: {Collapse: true}` 以免首帧被零宽裁切。
 2. 色彩插值统一启用 `Oklab: true`；所有位移与弹簧自动遵循系统 `Preferences.ReduceMotion` 无障碍降级；`components.Dialog` 外层须独立用 keyed `ui.Box` 包裹（不在参数内直接传 `c.Key(...)`）。
 
-**前端科研文案规范（强制）**：所有面向研究者的界面文案、状态胶囊、提示与报错严禁暴露 `Core`、`Rust Core`、`后端`、`schema`、`JSON`、`readout.submit`、`AsterDoc`、`rev`、内部数据库版本号（如 `"第 N 版"` / `"方案第 N 版"`）、英文原词（如 `insufficient`）、开发术语（如旧版层名或 `Notebook`）或原始数据库 ID（如 `blk-*`、`assay-*`、`inhibition_zone_mm`）；统一使用自然科研表达（如「数据已记录」「本步实验操作与记录」「方案耗时测算」「实验测定数据表」「计划中」「进行中」「已完成」「实时保存」「开始实验」「记偏离」「+ 追加标签」），底层标识仅在「步骤高级选项与技术标识」「技术属性（只读）」等二级折叠区按 `UX-P2` 按需展示。
+**前端科研文案规范（强制）**：所有面向研究者的界面文案、状态胶囊、提示与报错严禁暴露 `Core`、`Rust Core`、`后端`、`schema`、`JSON`、`readout.submit`、`AsterDoc`、`rev`、内部数据库版本号（如 `"第 N 版"` / `"方案第 N 版"`）、英文原词（如 `insufficient`、`missing variable`）、开发术语（如旧版层名或 `Notebook`）或原始数据库 ID（如 `blk-*`、`assay-*`、`inhibition_zone_mm`）；统一使用自然科研表达（如「数据已记录」「本步实验操作与记录」「方案耗时测算」「实验测定数据表」「计划中」「进行中」「已完成」「实时保存」「开始实验」「记偏离」「+ 追加标签」），底层标识仅在「步骤高级选项与技术标识」「技术属性（只读）」等二级折叠区按 `UX-P2` 按需展示。
+
+---
+
+## 11. 全局光学对齐、精简顶栏与编辑器排版铁律（对标 Obsidian × TopInspo）
+
+1. **全局行内光学对齐铁律（禁止 `AlignSelf(ui.Start)` 破坏居中）**：
+   - `onevra` 的 `components.Badge` 内部默认带 `AlignSelf(ui.Start)`，放入横排卡片底栏/标题栏/计时器行时会导致胶囊上浮错位。
+   - **强制规范**：所有水平横排条（文档头、图片关联底栏、计时器行、计算器标题栏）必须使用 `AlignItems(ui.Center)`，且所有行内胶囊与徽标必须通过 `inlineBadge(...)`（显式 `.AlignSelf(ui.Center)`）及统一 `24dp` (`Spacing24`) 高度渲染，确保芯片、徽标、幽灵按钮处于同一条水平中线。
+2. **顶部双栏极简框架（对标 Obsidian）**：
+   - 桌面端顶部仅允许 **2 条**结构栏：① **统一顶栏标签条**（左紧凑 `← →` 历史导航 + 标签页 + `+`，右紧凑 `🔍` 快速打开与 `◫` 右抽屉开关）；② **单窗格视图头**（面包屑 + 实验模式/查找/复制/更多）。禁止再叠第三条低密度空白顶条。
+3. **顶部纯图标悬浮工具栏 + 单 `+` 直连 Slash 命令面板**：
+   - 取消文档底部常驻文字按钮栏；顶部居中仅保留极轻 6 图标胶囊（`H / B / I / 无序列表 / 待办清单 | +`），纯图标无常驻文字（仅 hover tooltip）。
+   - 单 `+` 组件入口与行首 `/` 共享同一套 TopInspo 风格命令面板（`24×24` 图标块 + 粗体中文名 + 单行说明 + 右侧等宽 `/cmd` 胶囊，支持 `↑↓ / Enter / 单次 Esc 撤回关闭`）。
+   - **实验模式 (`ModeLab`) 原样渲染锁定**：工具栏位置、宽度、高度原样保留，仅置灰锁定禁用，零布局跳动。
+4. **Live Preview 排版与复选框规范**：
+   - 中文友好正文行高 `1.75`；标题采用清晰排版跨度与呼吸感（`H1 22px / LH 1.65`、`H2 18px / LH 1.65`、`H3 15.5px / LH 1.6`）。
+   - 行内待办清单 `- [ ]` / `- [x]` 使用 `14×14px` 光学居中圆角复选框，不直接使用 `16×16px` 表单大框挤压行距。
+5. **计算器自解释表格解剖规范**：
+   - 顶部必须提供清晰表头（`项目名称 | 公式代号 | 数值 / 公式表达式 | 单位 | 计算结果`）及一键预设模板菜单。
+   - 公式代号以等宽浅底代码胶囊呈现（保留 `_` 合法变量字符），修改代号时自动词边界联动重写同表公式；输入行右侧静默标示「输入项」，公式行左侧显 `=` 徽标且右侧以 Accent 粗体突出计算输出。

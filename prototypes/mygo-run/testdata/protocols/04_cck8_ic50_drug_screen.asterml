@@ -1,0 +1,177 @@
+---
+asterml: "2.1"
+title: 肿瘤细胞 CCK-8 药物 IC50 剂量效应曲线测定（药理与药物筛选）
+scheduled_date: "2026-11-22"
+status: active
+tags: [pharmacology, cck8, ic50, drug-screening]
+---
+
+## 1.1 实验设计（全局蓝图：分组与 96 孔板）
+- **研究体系**：A549 人肺癌细胞 + RPMI-1640 + 10% FBS，Doxorubicin 6 浓度梯度处理
+- **单一自变量**：Doxorubicin 给药终浓度（10 uM 起 2 倍连续倍比稀释共 6 级）
+- **容器与复孔**：1 块 96 孔板，6 个药物梯度组 + 1 个 DMSO 溶媒对照组（每组 3 复孔 = 21 实验孔）+ 3 个无细胞空白调零孔
+
+## 试剂与耗材
+- Doxorubicin 冻干粉（分子量 MW = 543.5 g/mol，配制 10 mM 母液于 DMSO）
+- CCK-8 检测试剂盒（避光 4°C 保存）
+
+```asterlab
+id: gt-cck8
+kind: group_table
+schema: 1
+title: IC50 药物梯度分组
+rows:
+  - id: g_veh
+    name: DMSO Vehicle 对照
+    role: control
+    technical_repeats: 3
+  - id: g_d1
+    name: 10 uM Dox
+    role: treatment
+    technical_repeats: 3
+  - id: g_d2
+    name: 5 uM Dox
+    role: treatment
+    technical_repeats: 3
+  - id: g_d3
+    name: 2.5 uM Dox
+    role: treatment
+    technical_repeats: 3
+  - id: g_d4
+    name: 1.25 uM Dox
+    role: treatment
+    technical_repeats: 3
+  - id: g_d5
+    name: 0.625 uM Dox
+    role: treatment
+    technical_repeats: 3
+  - id: g_d6
+    name: 0.3125 uM Dox
+    role: treatment
+    technical_repeats: 3
+  - id: g_blk
+    name: 无细胞调零空白
+    role: control
+    technical_repeats: 3
+```
+
+```asterlab
+id: plate-cck8
+kind: plate
+schema: 1
+title: 96 孔板药筛排布（21 实验孔 + 3 调零空白孔）
+format: 96
+groups:
+  g_veh: [A1, A2, A3]
+  g_d1: [B1, B2, B3]
+  g_d2: [C1, C2, C3]
+  g_d3: [D1, D2, D3]
+  g_d4: [E1, E2, E3]
+  g_d5: [F1, F2, F3]
+  g_d6: [G1, G2, G3]
+  g_blk: [H1, H2, H3]
+roles:
+  H1: blank
+  H2: blank
+  H3: blank
+```
+
+## 1.2 实验步骤（就地执行工具流）
+
+#@ 铺板与细胞贴壁
+- 实测 A549 悬液密度 2e5 cells/mL，每孔接种 5e3 细胞，每孔 100 uL
+- 37°C、5% CO2 培养箱静置贴壁至少 12 h
+
+#@ 药物配制与连续倍比稀释给药 {#t0}
+
+```asterlab
+id: calc-dox-stock
+kind: calculator
+schema: 1
+title: Doxorubicin 10 mM 母液摩尔称量
+mode: formula
+rows:
+  - key: C
+    label: 目标母液浓度
+    kind: input
+    value: 10
+    unit: mM
+  - key: V
+    label: 配制体积
+    kind: input
+    value: 2
+    unit: mL
+  - key: MW
+    label: Doxorubicin 分子量
+    kind: input
+    value: 543.5
+    unit: g/mol
+  - key: m
+    label: 需称取干粉质量
+    kind: formula
+    formula: '\frac{C \times V \times MW}{1000}'
+    unit: mg
+```
+
+- 将 Doxorubicin 母液稀释至 10 uM 工作液，终体积 2 mL
+- 将 10 uM 药物做 2 倍连续倍比稀释，每级留存 200 uL
+
+```asterlab
+id: timer-drug-t0
+kind: timer
+schema: 1
+title: 给药起始时刻 (t0)
+mode: stopwatch
+anchor: t0
+started_at: "2026-11-22T01:00:00Z"
+```
+
+#@ 给药后 24 h / 48 h CCK-8 显色检测
+
+```asterlab
+id: timer-cck8-24h
+kind: timer
+schema: 1
+title: t0 + 24 h 细胞活力读板窗口
+mode: window
+anchor: t0
+offset:
+  value: 24
+  unit: h
+schedule_window: "t0 + 24 h 加入 CCK-8 并测 OD450"
+```
+
+```asterlab
+id: calc-cck8-reagent
+kind: calculator
+schema: 1
+title: CCK-8 工作液预混（联动顶部 21 有效实验孔）
+mode: formula
+rows:
+  - key: N
+    label: 有效实验孔数
+    kind: input
+    value: "@plate.sample_wells"
+    unit: 孔
+  - key: V_0
+    label: 单孔 CCK-8 体积
+    kind: input
+    value: 10
+    unit: uL
+  - key: r
+    label: 富余比例 (15%)
+    kind: input
+    value: 0.15
+    unit: ""
+  - key: V_cck8
+    label: 所需 CCK-8 原液总体积
+    kind: formula
+    formula: 'N \times V_{0} \times (1 + r)'
+    unit: uL
+```
+
+- 加入 10% CCK-8 工作液后 37°C 避光孵育 2 h
+
+## 2. 实验讨论与复盘
+- 上批次最高剂量 10 uM 组细胞几乎全部漂浮，本次下探至 0.3125 uM 以完整拟合 IC50 曲线
+- 本批 A549 细胞传代至 P8，汇合度约 80%，形态正常无支原体污染

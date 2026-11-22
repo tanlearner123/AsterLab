@@ -49,9 +49,11 @@ jobs:
           else
             IS_PRE="false"
           fi
-          echo "tag=${RAW_TAG}" >> "$GITHUB_OUTPUT"
-          echo "version=${PKG_VER}" >> "$GITHUB_OUTPUT"
-          echo "prerelease=${IS_PRE}" >> "$GITHUB_OUTPUT"
+          {
+            echo "tag=${RAW_TAG}"
+            echo "version=${PKG_VER}"
+            echo "prerelease=${IS_PRE}"
+          } >> "$GITHUB_OUTPUT"
 
       - name: Install CJK font for PDF tests
         run: |

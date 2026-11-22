@@ -77,7 +77,10 @@ func TestDefaultStarterBlockWithPrefs(t *testing.T) {
 	}
 
 	calc := DefaultStarterBlockWithPrefs(nil, "step-1", "calculator", 96, 15)
-	if calc["excess_pct"] != 15 {
-		t.Fatalf("expected calculator excess_pct=15, got %v", calc["excess_pct"])
+	if ratio, _ := calc["excess_ratio"].(float64); ratio != 0.15 {
+		t.Fatalf("expected calculator excess_ratio=0.15, got %v", calc["excess_ratio"])
+	}
+	if _, bad := calc["excess_pct"]; bad {
+		t.Fatalf("calculator must not emit undeclared excess_pct key")
 	}
 }

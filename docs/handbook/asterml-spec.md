@@ -4,10 +4,17 @@ AsterML v2 是面向人类科研书写与机器严格校验的声明式实验文
 
 ## 文档基本结构
 
-每个 `.asterml` 文件由两部分组成：
+每个 `.asterml` 文件由三类自由混排的内容组成（新建空白文档仅含最小 Frontmatter，不强制预置步骤）：
 
 1. **YAML Frontmatter**：声明 `title`、`date`、`time`、`experiment_id`、`project`、`objective`、`culture_condition`、`status`、`tags` 等文档级元数据。
-2. **Markdown 正文与 `asterlab` 模块围栏**：标题与自由文本说明穿插结构化 ` ```asterlab ` YAML 模块块，每个块均以稳定 `id` 与 `kind` 标识。
+2. **自由 Markdown 正文、扁平步骤标题与行内关联语法**：
+   - **轻量化嵌套步骤语法（`##@ 标题`）**：行首 `#{1,6}@ <步骤标题>`（可选尾缀 `{#anchor}` 或 `{optional}`）声明一个可执行实验步骤，井号数表嵌套层级（如 `##@ 配液与交联` 下挂 `###@ 热循环溶解` 与 `###@ 405 nm 光交联 {#t0}`）。由 [steps.go](../../prototypes/mygo-run/internal/asterdoc/steps.go) 单调栈解析器自动划定作用域（遇同级或更高级普通标题如 `## 实验讨论` 自动闭合，不误吸讨论区待办），向上汇总 `- [ ]` 核对进度与计时状态，驱动 Live Preview 步骤徽标、右侧嵌套大纲、`{@t0}` 关联解析与 Agent CLI；与旧文档中的 `step@1` YAML 模块无损共存。
+   - **行内科学关联语法（`{...}`）**：任意图片或附件紧跟零冲突 `{...}` 属性块（Pandoc / Markdown 通用惯例），例如：
+     - 普通插图（无科学关联）：`![[assets/scheme.png]]`
+     - 孔位显微图：`![[assets/huvec-a1-6h.png|400]]{@plate-12:A1 6h fov=1 role=obs}`
+     - 关联步骤锚点 / 一图多孔 / 原始附件：`![[assets/cure.png]]{@t0 role=obs}`、`![A1](./assets/a1.jpg){@plate-12:A1,A2 24h}`、`[[qpcr_raw.csv]]{@step-04 role=raw}`
+     - 该语法由 [relations.go](../../prototypes/mygo-run/internal/asterdoc/relations.go) 统一解析，驱动 Live Preview 交互胶囊、悬浮上下文卡、孔板双向反查与 Agent CLI 理解，与 LaTeX `$...$` 及 Obsidian `|400` 零冲突。
+3. **`asterlab` 结构化模块围栏**：可置于文档顶层（共享分组、共享孔板等）或 `step@1.blocks[]` 内，每个块以稳定 `id` 与 `kind` 标识。
 
 ## 三条架构铁律
 

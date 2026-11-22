@@ -1,0 +1,134 @@
+---
+asterml: "2.1"
+title: 细胞骨架 F-Actin 与核定位双标免疫荧光共聚焦成像（细胞成像）
+scheduled_date: "2026-11-22"
+status: active
+tags: [imaging, immunofluorescence, confocal, dapi]
+---
+
+## 1.1 实验设计（全局蓝图：分组与 24 孔爬片板）
+- **实验目的**：观察药物干预前后 HUVEC 细胞骨架重排与核形态变化
+- **容器与复孔**：1 块 24 孔板放细胞爬片，设对照组与处理组（各 4 孔 = 8 实验孔），另设 2 孔无一抗阴性空白对照
+
+## 试剂与耗材
+- DAPI 储液 1 mg/mL（-20°C 避光分装保存）
+- 4% PFA 多聚甲醛固定液与 0.2% Triton X-100 透膜液
+- Alexa Fluor 488 标记二抗（工作稀释比 1:1000）
+
+```asterlab
+id: gt-if
+kind: group_table
+schema: 1
+title: 免疫荧光成像分组
+rows:
+  - id: g_ctrl
+    name: Control 对照组
+    role: control
+    technical_repeats: 4
+  - id: g_treat
+    name: Drug 处理组
+    role: treatment
+    technical_repeats: 4
+  - id: g_no_ab
+    name: 无一抗空白对照
+    role: control
+    technical_repeats: 2
+```
+
+```asterlab
+id: plate-if
+kind: plate
+schema: 1
+title: 24 孔爬片板（8 实验孔 + 2 无一抗空白孔）
+format: 24
+groups:
+  g_ctrl: [A1, A2, A3, A4]
+  g_treat: [B1, B2, B3, B4]
+  g_no_ab: [C1, C2]
+roles:
+  C1: blank
+  C2: blank
+```
+
+## 1.2 实验步骤（就地执行工具流）
+
+#@ 固定、透膜与封闭
+- 4% PFA 室温固定 15 min，然后 0.2% Triton X-100 透膜 10 min
+- 5% BSA 室温封闭 1 h
+- 用无菌 PBS 轻柔润洗 3 遍后吸弃上清
+
+#@ 抗体配制与荧光复染
+
+```asterlab
+id: calc-if-ab
+kind: calculator
+schema: 1
+title: 一抗孵育液总需求量（联动 8 实验孔）
+mode: formula
+rows:
+  - key: N
+    label: 有效染色孔数
+    kind: input
+    value: "@plate.sample_wells"
+    unit: 孔
+  - key: V_0
+    label: 每孔抗体液体积
+    kind: input
+    value: 200
+    unit: uL
+  - key: r
+    label: 富余比例 (20%)
+    kind: input
+    value: 0.2
+    unit: ""
+  - key: V_ab_tot
+    label: 一抗稀释液总配制量
+    kind: formula
+    formula: 'N \times V_{0} \times (1 + r)'
+    unit: uL
+```
+
+```asterlab
+id: calc-if-ab-stock
+kind: calculator
+schema: 1
+title: 一抗原液吸取量（级联上游总液量 1:500）
+mode: formula
+rows:
+  - key: V_tot
+    label: 上游一抗总配制量
+    kind: input
+    value: "@calc.calc-if-ab.V_ab_tot"
+    unit: uL
+  - key: N_dil
+    label: 抗体稀释比
+    kind: input
+    value: 500
+    unit: 倍
+  - key: V_stock
+    label: 需吸取一抗母液
+    kind: formula
+    formula: '\frac{V_{tot}}{N_{dil}}'
+    unit: uL
+```
+
+- 将 DAPI 母液稀释至 1 ug/mL 工作液，终体积 5 mL
+- 室温避光二抗孵育 1 h；随后加 DAPI 染核 5 min
+
+#@ 共聚焦多通道采图
+- 对全部实验孔每孔采集 5 个非重叠荧光视野
+
+```asterlab
+id: att-if-confocal
+kind: attachment
+schema: 1
+title: 共聚焦双通道荧光采图槽位
+scope: container_grid
+container_ref: plate-if
+slots_per_cell: 5
+media_hint: 每孔 5 个非重叠 40× 荧光视野（DAPI + AF488，自动排除无一抗空白孔）
+```
+
+## 2. 实验讨论与复盘
+- 上次 DAPI 染核 15 min 导致过曝，本次严格控制为 5 min
+- 文献报道封片后 4°C 避光可保存荧光信号 1 周以上

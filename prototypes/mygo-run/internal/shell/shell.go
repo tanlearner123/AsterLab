@@ -167,6 +167,7 @@ type Shell struct {
 	RightCalc        RightCalcState
 	PantryItems      []QuickPantryItem
 	OutlineSteps     []OutlineItem
+	OutlineOnlySteps bool
 	PaletteOpen      bool
 	PaletteQuery     string
 	PaletteCursor    int
@@ -333,6 +334,12 @@ func (s *Shell) Invalidate() {
 func (s *Shell) topChromeBar(c *ui.Context) {
 	s.EnsureTabs()
 	tok := theme.GetTokens(c.Theme())
+	if s.leafCount() == 1 {
+		if leaf := s.firstLeaf(s.RootPane); leaf != nil {
+			s.renderPaneTabBar(c, tok, leaf)
+			return
+		}
+	}
 	if s.window != nil {
 		s.RightOpen = s.window.RightExpanded()
 	}
@@ -359,13 +366,8 @@ func (s *Shell) topChromeBar(c *ui.Context) {
 				SingleLine().Ellipsis("…").MaxWidth(float32(tok.Spacing48) * 5)
 		}
 
-		cmdBtn := components.Button(c, "", components.ButtonGhost).Label("快速打开 (Ctrl+O)")
-		cmdBtn.Children(func() {
-			ui.Row(c).AlignItems(ui.Center).Gap(float32(tok.Spacing4)).Children(func() {
-				ui.Icon(c, lucide.Search()).Size(float32(tok.Spacing12), float32(tok.Spacing12)).TextColor(tok.TextMuted)
-				ui.Text(c, "快速打开 (Ctrl+O)").FontSize(float32(tok.TextData)).TextColor(tok.TextMuted).SingleLine()
-			})
-		})
+		cmdBtn := components.IconButton(c, lucide.Search(), "快速打开 (Ctrl+O)", components.IconButtonCompact)
+		components.Tooltip(c, cmdBtn, "快速打开 (Ctrl+O)")
 		if cmdBtn.Clicked() {
 			s.PaletteOpen = true
 			s.PaletteCursor = 0
@@ -558,8 +560,8 @@ func (s *Shell) renderDesktopStatusBar(c *ui.Context, tok theme.Tokens) {
 			modeLbl = "储藏室货架"
 		default:
 			switch tab.Mode {
-			case ModeRead:
-				modeLbl = "阅读模式"
+			case ModeLab:
+				modeLbl = "实验模式（防误触）"
 			case ModeSource:
 				modeLbl = "源码模式"
 			default:
@@ -668,9 +670,11 @@ func (s *Shell) renderLeafPane(c *ui.Context, tok theme.Tokens, pane *PaneNode) 
 		if isFocusedPane && s.leafCount() > 1 {
 			ui.Box(c).FillWidth().Height(2).Background(tok.Accent.Alpha(.75))
 		}
-		// 1. Per-Pane Obsidian Tab Bar (Translucent Frosted Header)
-		s.renderPaneTabBar(c, tok, pane)
-		ui.Box(c).FillWidth().Height(1).Background(tok.Border.Alpha(.55))
+		// 1. Per-Pane Obsidian Tab Bar (skipped when hosted inside native window ContentTitle in single-pane mode)
+		if !(s.window != nil && s.leafCount() == 1) {
+			s.renderPaneTabBar(c, tok, pane)
+			ui.Box(c).FillWidth().Height(1).Background(tok.Border.Alpha(.55))
+		}
 
 		// 2. Active Tab Content Surface + Edge Drag-to-Split Drop Zones
 		var activeTab *WorkspaceTab
@@ -731,10 +735,31 @@ func (s *Shell) renderPaneTabBar(c *ui.Context, tok theme.Tokens, pane *PaneNode
 	if s.middleHeld == nil {
 		s.middleHeld = map[string]bool{}
 	}
+	if s.window != nil {
+		s.RightOpen = s.window.RightExpanded()
+	}
+	isFirstPane := s.firstLeaf(s.RootPane) == pane
+	isLastPane := s.lastLeaf(s.RootPane) == pane
+
 	bar := ui.Row(c).FillWidth().Padding(float32(tok.Spacing4), float32(tok.Spacing8)).
 		AlignItems(ui.Center).Gap(float32(tok.Spacing4))
 	theme.ApplyChromeGlass(bar, tok, false)
 	bar.Children(func() {
+		// Unified Obsidian Top Bar: compact Back/Forward history controls inline on the left of the tab strip
+		if isFirstPane {
+			backBtn := components.IconButton(c, lucide.ArrowLeft(), "后退 (Alt+←)", components.IconButtonCompact)
+			backBtn.Disabled(!s.CanBack())
+			if backBtn.Clicked() {
+				s.GoBack()
+			}
+			fwdBtn := components.IconButton(c, lucide.ArrowRight(), "前进 (Alt+→)", components.IconButtonCompact)
+			fwdBtn.Disabled(!s.CanForward())
+			if fwdBtn.Clicked() {
+				s.GoForward()
+			}
+			ui.Box(c).Width(1).Height(float32(tok.Spacing16)).Margin(0, float32(tok.Spacing4)).Background(tok.Border.Alpha(0.7))
+		}
+
 		ui.ScrollHorizontal(c.Key("tab-scroll-"+pane.ID)).Grow(1).MinWidth(0).Children(func() {
 			ui.Row(c).AlignItems(ui.Center).Gap(float32(tok.Spacing4)).Children(func() {
 				for idx, tab := range pane.Tabs {
@@ -863,12 +888,52 @@ func (s *Shell) renderPaneTabBar(c *ui.Context, tok theme.Tokens, pane *PaneNode
 				}
 			})
 		})
-		spacerArea := ui.Box(c).Width(float32(tok.Spacing24)).Height(float32(tok.Spacing24)).Shrink(0)
+		spacerArea := ui.Box(c).Width(float32(tok.Spacing16)).Height(float32(tok.Spacing24)).Shrink(0)
 		if spacerArea.DoubleClicked() {
 			s.ActivePaneID = pane.ID
 			s.triggerVaultNewFile("")
 		}
+
+		// Unified Obsidian Top Bar: right-side compact Quick Open & Right Drawer toggle
+		if isLastPane {
+			if s.Loading {
+				components.Text(c, "加载中…").TextColor(tok.TextMuted).FontSize(float32(tok.TextMeta)).Shrink(0)
+			}
+			if s.Error != "" {
+				components.Text(c, s.Error).TextColor(tok.Danger).FontSize(float32(tok.TextMeta)).
+					SingleLine().Ellipsis("…").MaxWidth(float32(tok.Spacing48) * 4)
+			}
+			cmdBtn := components.IconButton(c, lucide.Search(), "快速打开 (Ctrl+O)", components.IconButtonCompact)
+			components.Tooltip(c, cmdBtn, "快速打开 (Ctrl+O)")
+			if cmdBtn.Clicked() {
+				s.PaletteOpen = true
+				s.PaletteCursor = 0
+			}
+			if s.window == nil {
+				rdBtn := components.IconButton(c, lucide.PanelRight(), "大纲与速算抽屉", components.IconButtonCompact)
+				components.Tooltip(c, rdBtn, "大纲与速算抽屉")
+				if s.RightOpen {
+					rdBtn.Background(tok.AccentSoftBg)
+				}
+				if rdBtn.Clicked() {
+					s.ToggleRightDrawer()
+				}
+			}
+		}
 	})
+}
+
+func (s *Shell) lastLeaf(n *PaneNode) *PaneNode {
+	if n == nil {
+		return nil
+	}
+	if n.isLeaf() {
+		return n
+	}
+	if r := s.lastLeaf(n.Second); r != nil {
+		return r
+	}
+	return s.lastLeaf(n.First)
 }
 
 func detectDropZone(box ui.Element) string {
@@ -952,12 +1017,7 @@ func (s *Shell) RenderSplitView(c *ui.Context) {
 			})
 		})
 		ui.Column(c).Grow(1).FillHeight().MinWidth(0).Children(func() {
-			chromeRow := ui.Row(c).FillWidth().Padding(float32(tok.Spacing4), float32(tok.Spacing12)).
-				Border(1, tok.Border.Alpha(0.65)).AlignItems(ui.Center)
-			theme.ApplyChromeGlass(chromeRow, tok, false)
-			chromeRow.Children(func() {
-				s.topChromeBar(c)
-			})
+			// Unified Obsidian-style 2-bar header: tabs + back/forward + quick-open live in ONE top tab bar
 			ui.Box(c).Grow(1).FillWidth().MinHeight(0).Children(func() {
 				s.page(c)
 			})

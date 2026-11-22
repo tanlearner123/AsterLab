@@ -84,7 +84,7 @@ jobs:
 
           TARGET="${CUSTOM_VPS_DIR:-/var/www/docs.asterlab.party}"
           USE_SUDO=""
-          if ! mkdir -p "$(dirname "$TARGET")" 2>/dev/null || ([ -e "$TARGET" ] && [ ! -w "$TARGET" ]); then
+          if ! mkdir -p "$(dirname "$TARGET")" 2>/dev/null || { [ -e "$TARGET" ] && [ ! -w "$TARGET" ]; }; then
             if sudo -n true 2>/dev/null; then
               USE_SUDO="sudo -n"
               $USE_SUDO mkdir -p "$(dirname "$TARGET")"
@@ -168,7 +168,7 @@ jobs:
 
           TARGET="${CUSTOM_WWW_DIR:-/srv/projects/asterlab-web}"
           USE_SUDO=""
-          if ! mkdir -p "$(dirname "$TARGET")" 2>/dev/null || ([ -e "$TARGET" ] && [ ! -w "$TARGET" ]); then
+          if ! mkdir -p "$(dirname "$TARGET")" 2>/dev/null || { [ -e "$TARGET" ] && [ ! -w "$TARGET" ]; }; then
             if sudo -n true 2>/dev/null; then
               USE_SUDO="sudo -n"
               $USE_SUDO mkdir -p "$(dirname "$TARGET")"

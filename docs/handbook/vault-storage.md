@@ -11,7 +11,8 @@ AsterLab 的本地存储完全基于普通操作系统目录（Vault），不依
 │   ├── local.json          # 本机私有状态（不随云盘同步）：本机 VaultPath、最近打开项目文件夹 LastProjectDir
 │   ├── workspace.json      # 分屏布局、已打开页签与当前焦点面板状态
 │   ├── cache/
-│   │   └── index.json      # 一次性增量缓存（全文行索引 / Backlinks / Vault Timers / Tags）；删除可随时重建
+│   │   ├── index.json      # 一次性增量缓存（全文行索引 / Backlinks / 行内科学关联 / Vault Timers / Tags）；删除可随时重建
+│   │   └── cmd-journal.json # 有界命令幂等回执日志（最近 200 条），防止 Agent 重试重复创建对象；不污染 .asterml 正文
 │   ├── snapshots/          # File Recovery 离线版本快照（2 分钟防抖、每文件最多保留 20 份）
 │   ├── trash_meta.json     # 软删除原路径与时间戳元数据
 │   └── trash/              # 回收站文件备份目录
@@ -40,6 +41,7 @@ AsterLab 的本地存储完全基于普通操作系统目录（Vault），不依
 - **增量刷新 (`Refresh`) & 即时更新 (`UpsertSource`)**：基于文件 `ModTimeUnix` 与 `Size` 做增量解析并落盘 `.asterlab/cache/index.json`；前端每次编辑保存即时刷新内存索引，无冷启动卡顿。
 - **全文检索 (`SearchFullText`)**：匹配标题、目录、试剂编号 `pantry_code` 与正文行，服务桌面端 `Ctrl+Shift+F` 与 CLI `vault.search`。
 - **反向链接与复现谱系 (`BacklinksFor`)**：汇总全部通过 `[[...]]` 与 `repeat_of` 指向当前实验的上下游实验。
+- **行内科学关联倒排 (`RelationsFor`)**：索引所有 `![[...]]{@plate:well ...}` / `[[...]]{@...}` 与块内采图关系，支持按 `(relPath, objectID, subTarget)` 瞬时双向反查。
 - **全库运行中计时器聚合 (`ActiveTimers`)**：跨所有非模板 `.asterml` 文件收集 `status: running | paused` 的 `timer@1` 块，联动底部状态栏计数与右侧伴随抽屉跳转。
 - **跨实验结构化查询 (`QueryBases`)**：按目录前缀、状态、标签与关键词筛选返回标准化 `BasesRow`（`LabBases` 数据基座）。
 

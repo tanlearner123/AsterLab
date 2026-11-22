@@ -1,0 +1,182 @@
+{
+  "version": "1.0.0",
+  "description": "AsterLab single-source-of-truth compact extraction schemas and Trigger Descriptors shared by Go runtime (ExpandCompactSlot), Jev/GLiClass/GLiNER2 routing, and Colab distillation pipelines.",
+  "atomic_slot_types": [
+    "text",
+    "quantity",
+    "count",
+    "enum",
+    "repeated_tuple"
+  ],
+  "non_suggestible_kinds": [
+    "prose",
+    "figure",
+    "subflow",
+    "data_table",
+    "checklist",
+    "step",
+    "workflow"
+  ],
+  "global_negative_boundary": "Never suggest an interactive widget for routine manual actions (washing 2x, pipetting 3x, aspirating supernatant), static reagent storage (-20C freezer), study objectives, passage/confluence observations (P5, 85%), or post-hoc discussion/troubleshooting notes even when they contain numbers or units.",
+  "targets": [
+    {
+      "id": "timer.cycle",
+      "kind": "timer",
+      "mode": "cycle",
+      "title": "循环计时器",
+      "when_to_suggest": "Sentence specifies alternating multi-phase timed operations repeated for multiple rounds/cycles (e.g., 80°C water bath 5 min alternating with ice 10 min for 3 rounds).",
+      "when_not_to_suggest": "Single fixed incubation without alternating phases, or routine washing/pipetting repeated N times without timed phases.",
+      "slots": [
+        {"key": "title", "type": "text", "required": false, "desc": "计时名称"},
+        {"key": "r", "type": "count", "required": true, "desc": "循环轮数"},
+        {"key": "p", "type": "repeated_tuple", "required": true, "desc": "阶段元组数组 [[阶段名(text), 数值(number), 单位(s|min|h)], ...]"}
+      ],
+      "example_zh": "80°C 水浴 5 min 与冰上 10 min 交替 3 轮至澄清",
+      "example_en": "Alternate 80°C water bath 5 min and ice 10 min for 3 cycles until clear",
+      "example_json": "{\"title\":\"冷热循环溶解\",\"r\":3,\"p\":[[\"80°C水浴\",5,\"min\"],[\"冰上静置\",10,\"min\"]]}"
+    },
+    {
+      "id": "timer.countdown",
+      "kind": "timer",
+      "mode": "countdown",
+      "title": "倒计时器",
+      "when_to_suggest": "Sentence specifies a single fixed-duration active incubation, centrifugation, crosslinking, or resting step (e.g., incubate 30 min at 37°C, spin 5 min).",
+      "when_not_to_suggest": "Long-term reagent storage (store at -20°C for 6 months), multi-round alternating cycles, or untimed manual actions.",
+      "slots": [
+        {"key": "title", "type": "text", "required": false, "desc": "计时名称"},
+        {"key": "dur", "type": "quantity", "required": true, "desc": "定时时长 [数值, 单位(s|min|h)]"}
+      ],
+      "example_zh": "37°C 培养箱孵育 30 min 使其充分聚合成胶",
+      "example_en": "Incubate at 37°C for 30 min for gel polymerization",
+      "example_json": "{\"title\":\"37°C孵育\",\"dur\":[30,\"min\"]}"
+    },
+    {
+      "id": "timer.stopwatch",
+      "kind": "timer",
+      "mode": "stopwatch",
+      "title": "正计时秒表",
+      "when_to_suggest": "Sentence describes an open-ended operation timed manually until a visual/physical endpoint is reached and elapsed seconds/minutes should be recorded.",
+      "when_not_to_suggest": "Fixed known countdown duration or passive observation without timing.",
+      "slots": [
+        {"key": "title", "type": "text", "required": true, "desc": "秒表名称"}
+      ],
+      "example_zh": "405 nm 蓝光照射直至水凝胶完全固化，记录实际固化秒数",
+      "example_en": "Irradiate with 405 nm blue light until fully gelled and record elapsed seconds",
+      "example_json": "{\"title\":\"405 nm 光固化正计时\"}"
+    },
+    {
+      "id": "timer.window",
+      "kind": "timer",
+      "mode": "window",
+      "title": "时间锚点等待窗",
+      "when_to_suggest": "Sentence defines a minimum waiting/soaking window (>= 2 h) or post-anchor follow-up timepoint schedule (e.g., t0 + 6h / 12h / 24h imaging).",
+      "when_not_to_suggest": "Short continuous bench countdown or static storage note.",
+      "slots": [
+        {"key": "anchor", "type": "text", "required": false, "desc": "时间锚点名 (如 t0)"},
+        {"key": "off", "type": "quantity", "required": true, "desc": "偏移/最小等待时长 [数值, 单位(min|h)]"},
+        {"key": "win", "type": "text", "required": false, "desc": "窗口说明"}
+      ],
+      "example_zh": "4°C 完全培养基浸泡平衡至少 2 小时（可并行处理其他实验）",
+      "example_en": "Equilibrate in complete medium at 4°C for at least 2 hours",
+      "example_json": "{\"anchor\":\"t0\",\"off\":[2,\"h\"],\"win\":\"≥ 2 h 浸泡平衡\"}"
+    },
+    {
+      "id": "calculator.dilution",
+      "kind": "calculator",
+      "mode": "dilution",
+      "title": "溶液稀释计算器 (C₁V₁=C₂V₂)",
+      "when_to_suggest": "Sentence requires calculating stock volume and diluent volume to dilute a known stock concentration to a target concentration and final volume (C1V1 = C2V2).",
+      "when_not_to_suggest": "Simple fixed addition without dilution math (e.g., add 1 mL PBS) or discussing historical concentration results.",
+      "slots": [
+        {"key": "name", "type": "text", "required": false, "desc": "试剂名"},
+        {"key": "c1", "type": "quantity", "required": true, "desc": "母液浓度 [数值, 单位]"},
+        {"key": "c2", "type": "quantity", "required": true, "desc": "目标浓度 [数值, 单位]"},
+        {"key": "v2", "type": "quantity", "required": true, "desc": "配制终体积 [数值, 单位]"}
+      ],
+      "example_zh": "将 100 ug/mL VEGF 母液稀释至 50 ng/mL，共配制 5 mL 工作液",
+      "example_en": "Dilute 100 ug/mL VEGF stock to 50 ng/mL in 5 mL final volume",
+      "example_json": "{\"name\":\"VEGF\",\"c1\":[100,\"ug/mL\"],\"c2\":[50,\"ng/mL\"],\"v2\":[5,\"mL\"]}"
+    },
+    {
+      "id": "calculator.weighing",
+      "kind": "calculator",
+      "mode": "weighing",
+      "title": "称量配液计算器",
+      "when_to_suggest": "Sentence requires calculating solid powder mass (mg/g) to weigh from a target % w/v or molar concentration (with MW) and target solution volume.",
+      "when_not_to_suggest": "Stating storage of leftover powder or quoting an already-weighed historical amount without preparation math.",
+      "slots": [
+        {"key": "name", "type": "text", "required": false, "desc": "溶质名"},
+        {"key": "c", "type": "quantity", "required": true, "desc": "目标浓度 [数值, % w/v 或 mM]"},
+        {"key": "v", "type": "quantity", "required": true, "desc": "配制终体积 [数值, mL|uL]"},
+        {"key": "mw", "type": "quantity", "required": false, "desc": "分子量 [数值, g/mol] (摩尔模式必填)"}
+      ],
+      "example_zh": "配制 5% w/v GelMA 前驱液 2 mL，计算需称取的冻干粉质量",
+      "example_en": "Prepare 2 mL of 5% w/v GelMA precursor solution and compute powder mass",
+      "example_json": "{\"name\":\"GelMA\",\"c\":[5,\"% w/v\"],\"v\":[2,\"mL\"]}"
+    },
+    {
+      "id": "calculator.mastermix",
+      "kind": "calculator",
+      "mode": "mastermix",
+      "title": "孔板预混液计算器",
+      "when_to_suggest": "Sentence scales per-well/per-reaction reagent volumes across multiple wells/reactions, typically with an overage percentage.",
+      "when_not_to_suggest": "Defining plate group layout without reagent scaling math.",
+      "slots": [
+        {"key": "n", "type": "count", "required": true, "desc": "孔数/反应数"},
+        {"key": "v0", "type": "quantity", "required": true, "desc": "单孔体积 [数值, uL|mL]"},
+        {"key": "r", "type": "quantity", "required": false, "desc": "富余比例 (如 0.15 表示 +15%)"}
+      ],
+      "example_zh": "24 孔板预混液（多配 15% 余量）：每孔 2x Mix 10 uL、引物 1.6 uL、水 6.4 uL",
+      "example_en": "24-well mastermix with 15% overage: 10 uL 2x Mix per well",
+      "example_json": "{\"n\":24,\"v0\":[10,\"uL\"],\"r\":0.15}"
+    },
+    {
+      "id": "calculator.seeding",
+      "kind": "calculator",
+      "mode": "seeding",
+      "title": "细胞接种计算器",
+      "when_to_suggest": "Sentence requires computing cell suspension volume and media top-up from measured cell density, target cells/well, volume/well, and well count.",
+      "when_not_to_suggest": "Reporting cell passage/confluence observation (e.g., P5, 85% confluent) without seeding math.",
+      "slots": [
+        {"key": "rho", "type": "quantity", "required": true, "desc": "实测悬液密度 (cells/mL)"},
+        {"key": "nw", "type": "count", "required": true, "desc": "每孔目标细胞数"},
+        {"key": "n", "type": "count", "required": true, "desc": "接种总孔数(含余量)"},
+        {"key": "vw", "type": "quantity", "required": true, "desc": "每孔接种体积 (uL)"}
+      ],
+      "example_zh": "实测 HUVEC 悬液密度 5e5 cells/mL，每孔接种 5e4 细胞（500 uL/孔），共 12 孔加 2 孔余量",
+      "example_en": "Seed 5e4 HUVEC/well in 500 uL across 14 wells from 5e5 cells/mL stock",
+      "example_json": "{\"rho\":500000,\"nw\":50000,\"n\":14,\"vw\":500}"
+    },
+    {
+      "id": "plate.layout",
+      "kind": "plate_group",
+      "mode": "",
+      "title": "孔板 + 实验分组",
+      "when_to_suggest": "Sentence defines multi-well plate format (4/6/12/24/48/96/384 wells) together with experimental treatment groups, controls/blanks, and replicate counts.",
+      "when_not_to_suggest": "Merely mentioning a past plate contamination/result in discussion, or imaging FOV count on an existing plate.",
+      "slots": [
+        {"key": "fmt", "type": "enum", "required": true, "desc": "孔板规格 (4|6|12|24|48|96|384)"},
+        {"key": "grps", "type": "repeated_tuple", "required": true, "desc": "分组元组 [[组名(text), 复孔数(count), 角色(treatment|control|blank)], ...]"}
+      ],
+      "example_zh": "12 孔板，3% / 5% / 7% GelMA 各 3 个技术复孔，第 4 列加无菌 PBS 作空白对照",
+      "example_en": "12-well plate with 3%/5%/7% GelMA in triplicates and PBS blank in column 4",
+      "example_json": "{\"fmt\":12,\"grps\":[[\"3% GelMA\",3,\"treatment\"],[\"5% GelMA\",3,\"treatment\"],[\"7% GelMA\",3,\"treatment\"],[\"PBS\",3,\"blank\"]]}"
+    },
+    {
+      "id": "attachment.grid",
+      "kind": "attachment",
+      "mode": "",
+      "title": "孔板采图网格",
+      "when_to_suggest": "Sentence defines systematic multi-well microscopy or imaging capture specifying wells and number of fields-of-view (FOVs) or fluorescence channels per well.",
+      "when_not_to_suggest": "Discussing a single past image finding or stating only a follow-up imaging timepoint schedule (6h/12h/24h) without FOV/channel capture slots.",
+      "slots": [
+        {"key": "slots", "type": "count", "required": true, "desc": "每孔视野/通道槽位数"},
+        {"key": "wells", "type": "count", "required": false, "desc": "采图孔数"},
+        {"key": "hint", "type": "text", "required": false, "desc": "采图条件说明 (如 10× 明场 / DAPI+GFP)"}
+      ],
+      "example_zh": "对 A1-C3 共 9 个孔进行 10× 明场采图，每孔随机拍 6 个非重叠视野（共 54 张）",
+      "example_en": "Capture 6 non-overlapping 10x brightfield FOVs per well across 9 wells (A1-C3)",
+      "example_json": "{\"slots\":6,\"wells\":9,\"hint\":\"10× 明场非重叠视野\"}"
+    }
+  ]
+}

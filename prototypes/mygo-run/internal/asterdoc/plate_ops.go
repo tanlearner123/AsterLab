@@ -378,7 +378,7 @@ func createGroupInResultWithSeed(doc *Document, res *PlateAnnotationResult, extr
 				} else {
 					rows = append(rows, rawAnySlice(m.Data["rows"])...)
 				}
-				rows = append(rows, map[string]any{"id": gid, "name": name, "role": role, "independent_n": 3})
+				rows = append(rows, map[string]any{"id": gid, "name": name, "role": role})
 				res.UpdateGroupTableID = m.ID
 				res.UpdateGroupTableRows = rows
 				return gid
@@ -393,7 +393,7 @@ func createGroupInResultWithSeed(doc *Document, res *PlateAnnotationResult, extr
 						} else {
 							rows = append(rows, rawAnySlice(bm["rows"])...)
 						}
-						rows = append(rows, map[string]any{"id": gid, "name": name, "role": role, "independent_n": 3})
+						rows = append(rows, map[string]any{"id": gid, "name": name, "role": role})
 						res.UpdateGroupTableID = bid
 						res.UpdateGroupTableStep = m.ID
 						res.UpdateGroupTableRows = rows
@@ -845,9 +845,11 @@ func (v *View) renderUnifiedPlateFloatingBar(
 		setSelected(nil)
 	}
 
+	// Note: omit FloatingBarTransition on pl-float-bar because it hosts components.Tabs
+	// (TabsSegmented), whose slideBehind indicator reads previous-pass element bounds and
+	// panics during exit-transition snapshots when the selection clears.
 	box := ui.Column(c.Key("pl-float-bar:"+plate.ID)).FillWidth().Padding(float32(tok.Spacing8), float32(tok.Spacing12)).
-		Radius(float32(tok.PanelRadius)).Background(tok.Elevated).Border(1, tok.BorderStrong).Gap(float32(tok.Spacing8)).
-		Transition(theme.FloatingBarTransition())
+		Radius(float32(tok.PanelRadius)).Background(tok.Elevated).Border(1, tok.BorderStrong).Gap(float32(tok.Spacing8))
 	theme.ApplyNudge(box, *nudgeSeq)
 	if inOverlay {
 		box.Background(tok.Surface).Shadow(0, float32(tok.Spacing8), float32(tok.Spacing24), 0, tok.Text.Alpha(.22))
@@ -1402,7 +1404,7 @@ func createGroupInResult(doc *Document, name, role string, res *PlateAnnotationR
 		for _, m := range doc.Modules {
 			if m.Kind == "group_table" {
 				rows := append([]any{}, rawAnySlice(m.Data["rows"])...)
-				rows = append(rows, map[string]any{"id": gid, "name": name, "role": role, "independent_n": 3})
+				rows = append(rows, map[string]any{"id": gid, "name": name, "role": role})
 				res.UpdateGroupTableID = m.ID
 				res.UpdateGroupTableRows = rows
 				return gid
@@ -1411,7 +1413,7 @@ func createGroupInResult(doc *Document, name, role string, res *PlateAnnotationR
 				for _, bm := range mapSlice(m.Data["blocks"]) {
 					if textValue(bm, "kind") == "group_table" {
 						rows := append([]any{}, rawAnySlice(bm["rows"])...)
-						rows = append(rows, map[string]any{"id": gid, "name": name, "role": role, "independent_n": 3})
+						rows = append(rows, map[string]any{"id": gid, "name": name, "role": role})
 						res.UpdateGroupTableID = textValue(bm, "id")
 						res.UpdateGroupTableStep = m.ID
 						res.UpdateGroupTableRows = rows

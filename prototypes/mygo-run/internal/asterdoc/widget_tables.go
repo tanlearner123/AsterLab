@@ -35,7 +35,10 @@ func (v *View) renderGroupTable(c *ui.Context, data map[string]any) {
 		vw, _ := c.Size()
 		compactCards := v.MobileCompact || (vw > 0 && vw < 520)
 		ui.Column(c).FillWidth().Gap(float32(tok.Spacing8)).Children(func() {
-			if compactCards {
+			if len(rows) == 0 {
+				ui.Text(c, "暂无实验分组，请在下方添加组别（支持不填独立 n 或仅填写技术复孔）。").
+					FontSize(float32(tok.TextMeta)).TextColor(tok.TextMuted)
+			} else if compactCards {
 				for idx, rm := range rows {
 					idx, rm := idx, rm
 					gid := textValue(rm, "id")
@@ -49,11 +52,11 @@ func (v *View) renderGroupTable(c *ui.Context, data map[string]any) {
 					}
 					nLabel := "—"
 					if indN > 0 && techR > 0 {
-						nLabel = fmt.Sprintf("n=%d × %d", int(indN), int(techR))
+						nLabel = fmt.Sprintf("n=%d × %d 复孔", int(indN), int(techR))
 					} else if indN > 0 {
 						nLabel = fmt.Sprintf("n=%d", int(indN))
 					} else if techR > 0 {
-						nLabel = fmt.Sprintf("rep=%d", int(techR))
+						nLabel = fmt.Sprintf("%d 复孔", int(techR))
 					}
 					ui.Row(c.Key("gt-mob-row:"+moduleID+":"+gid)).FillWidth().
 						Padding(float32(tok.Spacing12), float32(tok.Spacing16)).
@@ -78,7 +81,7 @@ func (v *View) renderGroupTable(c *ui.Context, data map[string]any) {
 							ui.Text(c, strings.Join(metaParts, " · ")).
 								FontSize(float32(tok.TextMeta)).TextColor(tok.TextMuted).FontFeatures("tnum")
 						})
-						if editable && len(rows) > 1 {
+						if editable {
 							if components.IconButton(c, lucide.Trash(), "删除组别", components.IconButtonCompact).Clicked() {
 								next := removeSliceIndex(rows, idx)
 								v.emitAnyModuleEdit(moduleID, map[string]any{"rows": next})
@@ -91,9 +94,9 @@ func (v *View) renderGroupTable(c *ui.Context, data map[string]any) {
 					{ID: "name", Title: "组别名称"},
 					{ID: "role", Title: "角色", Width: float32(tok.Spacing48) * 1.65},
 					{ID: "cond", Title: "处理条件"},
-					{ID: "rep", Title: "样本量", Width: float32(tok.Spacing48) * 1.55, Align: ui.End},
+					{ID: "rep", Title: "样本量", Width: float32(tok.Spacing48) * 1.9, Align: ui.End},
 				}
-				if editable && len(rows) > 1 {
+				if editable {
 					cols = append(cols, ui.TableColumn{ID: "act", Title: "", Width: float32(tok.Spacing32), Fixed: true})
 				}
 				components.Table(c, nil, cols, func() {
@@ -130,11 +133,11 @@ func (v *View) renderGroupTable(c *ui.Context, data map[string]any) {
 							case 3:
 								nLabel := "—"
 								if indN > 0 && techR > 0 {
-									nLabel = fmt.Sprintf("n=%d × %d", int(indN), int(techR))
+									nLabel = fmt.Sprintf("n=%d × %d 复孔", int(indN), int(techR))
 								} else if indN > 0 {
 									nLabel = fmt.Sprintf("n=%d", int(indN))
 								} else if techR > 0 {
-									nLabel = fmt.Sprintf("rep=%d", int(techR))
+									nLabel = fmt.Sprintf("%d 复孔", int(techR))
 								}
 								ui.Text(c, nLabel).FontSize(float32(tok.TextMeta)).TextColor(tok.Text).
 									FontFeatures("tnum").SingleLine().Ellipsis("…")
@@ -155,28 +158,32 @@ func (v *View) renderGroupTable(c *ui.Context, data map[string]any) {
 				newName := v.ensureWidgetDraft("gt:"+moduleID+":name", "")
 				newRole := v.ensureWidgetDraft("gt:"+moduleID+":role", "treatment")
 				newCond := v.ensureWidgetDraft("gt:"+moduleID+":cond", "")
-				newN := v.ensureWidgetDraft("gt:"+moduleID+":n", "3")
+				newN := v.ensureWidgetDraft("gt:"+moduleID+":n", "")
+				newTechR := v.ensureWidgetDraft("gt:"+moduleID+":rep", "")
 				submitGroup := func() {
 					if strings.TrimSpace(*newName) == "" {
 						return
 					}
 					next := append([]map[string]any{}, rows...)
-					nVal, _ := strconv.Atoi(strings.TrimSpace(*newN))
-					if nVal <= 0 {
-						nVal = 3
-					}
 					gid := fmt.Sprintf("g-%s-%d", sanitizeIDFrag(*newName), len(rows)+1)
 					rowObj := map[string]any{
-						"id":            gid,
-						"name":          strings.TrimSpace(*newName),
-						"role":          *newRole,
-						"condition":     strings.TrimSpace(*newCond),
-						"independent_n": nVal,
+						"id":        gid,
+						"name":      strings.TrimSpace(*newName),
+						"role":      *newRole,
+						"condition": strings.TrimSpace(*newCond),
+					}
+					if nVal, err := strconv.Atoi(strings.TrimSpace(*newN)); err == nil && nVal > 0 {
+						rowObj["independent_n"] = nVal
+					}
+					if repVal, err := strconv.Atoi(strings.TrimSpace(*newTechR)); err == nil && repVal > 0 {
+						rowObj["technical_repeats"] = repVal
 					}
 					next = append(next, rowObj)
 					v.emitAnyModuleEdit(moduleID, map[string]any{"rows": next})
 					*newName = ""
 					*newCond = ""
+					*newN = ""
+					*newTechR = ""
 				}
 				rolePicker := func() {
 					sel := components.Select(c, newRole)
@@ -205,8 +212,11 @@ func (v *View) renderGroupTable(c *ui.Context, data map[string]any) {
 							ui.Box(c).Grow(1).MinWidth(0).Children(func() {
 								components.TextBox(c, newCond, components.TextBoxOptions{}).Placeholder("处理/浓度条件")
 							})
-							ui.Box(c).Width(float32(tok.Spacing48)*1.05).Shrink(0).Children(func() {
+							ui.Box(c).Width(float32(tok.Spacing48)*1.1).Shrink(0).Children(func() {
 								components.TextBox(c, newN, components.TextBoxOptions{}).Placeholder("n")
+							})
+							ui.Box(c).Width(float32(tok.Spacing48)*1.2).Shrink(0).Children(func() {
+								components.TextBox(c, newTechR, components.TextBoxOptions{}).Placeholder("复孔")
 							})
 							if components.Button(c, "+ 添加", components.ButtonGhost).Clicked() {
 								submitGroup()
@@ -220,11 +230,14 @@ func (v *View) renderGroupTable(c *ui.Context, data map[string]any) {
 							components.TextBox(c, newName, components.TextBoxOptions{}).Placeholder("新组别名称")
 						})
 						rolePicker()
-						ui.Box(c).Grow(1).MinWidth(float32(tok.Spacing48)*2.2).Children(func() {
+						ui.Box(c).Grow(1).MinWidth(float32(tok.Spacing48)*2.0).Children(func() {
 							components.TextBox(c, newCond, components.TextBoxOptions{}).Placeholder("处理/浓度条件")
 						})
-						ui.Box(c).Width(float32(tok.Spacing48)*1.1).Shrink(0).Children(func() {
-							components.TextBox(c, newN, components.TextBoxOptions{}).Placeholder("n")
+						ui.Box(c).Width(float32(tok.Spacing48)*1.25).Shrink(0).Children(func() {
+							components.TextBox(c, newN, components.TextBoxOptions{}).Placeholder("独立 n")
+						})
+						ui.Box(c).Width(float32(tok.Spacing48)*1.55).Shrink(0).Children(func() {
+							components.TextBox(c, newTechR, components.TextBoxOptions{}).Placeholder("技术复孔")
 						})
 						if components.Button(c, "+ 添加组", components.ButtonGhost).Clicked() {
 							submitGroup()
@@ -396,15 +409,8 @@ func (v *View) renderParamTable(c *ui.Context, data map[string]any) {
 }
 
 func (v *View) renderUnifiedParamTable(c *ui.Context, tok theme.Tokens, moduleID, title string, rows []map[string]any, editableDesign bool) {
-	ui.Column(c).FillWidth().Padding(float32(tok.Spacing4), 0).
-		Gap(float32(tok.Spacing4)).Children(func() {
-		ui.Row(c).FillWidth().AlignItems(ui.Center).Gap(float32(tok.Spacing8)).Children(func() {
-			ui.Icon(c, lucide.SlidersHorizontal()).Size(float32(tok.Spacing16), float32(tok.Spacing16)).TextColor(tok.TextMuted)
-			renderInlineEditableTitle(v, c, moduleID, title, editableDesign)
-			ui.Spacer(c)
-			ui.Text(c, fmt.Sprintf("%d 项条件", len(rows))).FontSize(float32(tok.TextMeta)).TextColor(tok.TextMuted).FontFeatures("tnum")
-		})
-		ui.Box(c).FillWidth().Height(1).Background(tok.Border.Alpha(0.5))
+	renderUnifiedModuleShell(v, c, lucide.SlidersHorizontal(), moduleID, title, fmt.Sprintf("%d 项条件", len(rows)), editableDesign, nil, func() {
+		ui.Column(c).FillWidth().Gap(float32(tok.Spacing4)).Children(func() {
 
 		for idx, rm := range rows {
 			idx, rm := idx, rm
@@ -581,6 +587,7 @@ func (v *View) renderUnifiedParamTable(c *ui.Context, tok theme.Tokens, moduleID
 				v.emitAnyModuleEdit(moduleID, map[string]any{"rows": next})
 			}
 		}
+		})
 	})
 }
 
@@ -642,20 +649,13 @@ func (v *View) renderUnifiedDataTable(c *ui.Context, tok theme.Tokens, dark bool
 		v.emitAnyModuleEdit(moduleID, map[string]any{"rows": next})
 	}
 
-	ui.Column(c).FillWidth().Padding(float32(tok.Spacing4), 0).
-		Gap(float32(tok.Spacing4)).Children(func() {
-		// Top bar: Icon + inline editable title + concise layout/source trigger (`⋯`)
-		ui.Row(c).FillWidth().AlignItems(ui.Center).Gap(float32(tok.Spacing8)).Children(func() {
-			ui.Icon(c, lucide.Table2()).Size(float32(tok.Spacing16), float32(tok.Spacing16)).TextColor(tok.TextMuted)
-			renderInlineEditableTitle(v, c, moduleID, title, editableDesign)
-			if sourceRef != "" && !IsRawIdentifier(sourceRef) {
-				components.Badge(c, sourceRef, components.BadgeOptions{Tone: components.BadgeAccent})
-			} else if strings.HasPrefix(sourceRef, "@groups") {
-				components.Badge(c, "已关联分组", components.BadgeOptions{Tone: components.BadgeAccent})
-			} else if strings.HasPrefix(sourceRef, "@plate") {
-				components.Badge(c, "已关联孔板", components.BadgeOptions{Tone: components.BadgeAccent})
-			}
-			ui.Spacer(c)
+	dtMeta := fmt.Sprintf("%d 列", len(cols))
+	if strings.HasPrefix(sourceRef, "@groups") {
+		dtMeta = "已关联分组 · " + dtMeta
+	} else if strings.HasPrefix(sourceRef, "@plate") {
+		dtMeta = "已关联孔板 · " + dtMeta
+	}
+	renderUnifiedModuleShell(v, c, lucide.TableProperties(), moduleID, title, dtMeta, editableDesign, func() {
 			if hasGeom && *layoutDraft == "matrix" && len(numericCols) > 1 {
 				for _, ncm := range numericCols {
 					nKey := textValue(ncm, "key")
@@ -722,7 +722,8 @@ func (v *View) renderUnifiedDataTable(c *ui.Context, tok theme.Tokens, dark bool
 					}
 				})
 			}
-		})
+	}, func() {
+		ui.Column(c).FillWidth().Gap(float32(tok.Spacing8)).Children(func() {
 
 		if hasGeom && *layoutDraft == "matrix" && *valColDraft != "" {
 			v.renderDataTableMatrix(c, tok, dark, moduleID, pl, geom, cols, authoredRows, *valColDraft, !v.ReadOnly)
@@ -947,6 +948,7 @@ func (v *View) renderUnifiedDataTable(c *ui.Context, tok theme.Tokens, dark bool
 				v.emitAnyModuleEdit(moduleID, map[string]any{"rows": next})
 			}
 		}
+		})
 	})
 }
 
@@ -1778,6 +1780,10 @@ func (v *View) ApplyMatrixClipboardToDataTable(moduleID string, pl *Plate, cols,
 	}
 
 	wellToRow, wellColKey, sampleColKey := dataTableWellRowMap(cols, authoredRows, geom)
+	var docGraph *SciGraph
+	if v.Doc != nil {
+		docGraph = BuildSciGraph(v.Doc)
+	}
 	filled := 0
 	maxRowReached := -1
 	for r, parts := range parsed {
@@ -1789,6 +1795,14 @@ func (v *View) ApplyMatrixClipboardToDataTable(moduleID string, pl *Plate, cols,
 				continue
 			}
 			wID := fmt.Sprintf("%s%d", rowLabel(r), col+1)
+			// Consume unified SciUnit: skip excluded wells cleanly and auto-label sample/group!
+			unit, hasUnit := SciUnit{}, false
+			if docGraph != nil {
+				unit, hasUnit = docGraph.UnitForWell(pl.ID, wID)
+				if hasUnit && unit.Excluded {
+					continue
+				}
+			}
 			rIdx := wellToRow[wID]
 			ck := v.cellDraftKey(moduleID, rIdx, valColKey)
 			v.setTableCell(moduleID, ck, val)
@@ -1807,6 +1821,15 @@ func (v *View) ApplyMatrixClipboardToDataTable(moduleID string, pl *Plate, cols,
 				}
 				if strings.TrimSpace(v.dataTableCellVal(moduleID, rIdx, sampleColKey, pre)) == "" {
 					sid := firstNonEmpty(pl.Samples[wID], wID)
+					if pl.Samples[wID] == "" && hasUnit && unit.GroupName != "" {
+						if unit.Blank {
+							sid = unit.GroupName + " (Blank)"
+						} else if unit.RepIndex > 0 {
+							sid = fmt.Sprintf("%s #%d", unit.GroupName, unit.RepIndex)
+						} else {
+							sid = unit.GroupName
+						}
+					}
 					sck := v.cellDraftKey(moduleID, rIdx, sampleColKey)
 					v.setTableCell(moduleID, sck, sid)
 					sbuf := v.ensureWidgetDraft(sck, sid)

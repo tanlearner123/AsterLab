@@ -1,0 +1,106 @@
+---
+asterml: "2.1"
+title: Western Blot 磷酸化蛋白免疫印迹检测（蛋白生物化学）
+scheduled_date: "2026-11-22"
+status: active
+tags: [biochemistry, western-blot, protein, signaling]
+---
+
+## 1.1 实验设计（全局蓝图）
+- **实验目的**：检测刺激后 p-AKT / Total-AKT 蛋白磷酸化水平变化
+- **单一自变量**：药物处理时长（0 min、15 min、30 min、60 min）
+
+## 试剂与耗材
+- RIPA 裂解液（使用前按 1:100 加入 PMSF 蛋白酶抑制剂）
+- 一抗母液 p-AKT (Ser473)（4°C 短期保存，工作稀释比 1:1000）
+- 羊抗兔 HRP 二抗（工作稀释比 1:5000）
+- 5% 脱脂牛奶 TBST 封闭液
+
+## 1.2 实验步骤（就地执行工具流）
+
+#@ 蛋白裂解与离心取上清
+
+```asterlab
+id: calc-ripa-lysis
+kind: calculator
+schema: 1
+title: 裂解液配制与蛋白样品总量
+mode: formula
+rows:
+  - key: N_samp
+    label: 样品管数
+    kind: input
+    value: 8
+    unit: 管
+  - key: V_each
+    label: 每管裂解液体积
+    kind: input
+    value: 150
+    unit: uL
+  - key: V_ripa
+    label: RIPA 裂解液总量
+    kind: formula
+    formula: 'N_{samp} \times V_{each}'
+    unit: uL
+```
+
+```asterlab
+id: calc-pmsf-add
+kind: calculator
+schema: 1
+title: PMSF 蛋白酶抑制剂补加量（级联 RIPA 总量）
+mode: formula
+rows:
+  - key: V_ripa
+    label: 上游 RIPA 总量
+    kind: input
+    value: "@calc.calc-ripa-lysis.V_ripa"
+    unit: uL
+  - key: N_dil
+    label: PMSF 稀释倍数 (1:100)
+    kind: input
+    value: 100
+    unit: 倍
+  - key: V_pmsf
+    label: 需加入 PMSF 母液
+    kind: formula
+    formula: '\frac{V_{ripa}}{N_{dil}}'
+    unit: uL
+```
+
+- 冰上裂解 30 min；随后 4°C 12000 rpm 离心 15 min 取上清
+
+```asterlab
+id: calc-wb-rcf
+kind: calculator
+schema: 1
+title: 离心力换算确认 (12000 rpm)
+mode: formula
+rows:
+  - key: r
+    label: 离心机转子半径
+    kind: input
+    value: 8.5
+    unit: cm
+  - key: RPM
+    label: 设定转速
+    kind: input
+    value: 12000
+    unit: rpm
+  - key: RCF
+    label: 对应相对离心力
+    kind: formula
+    formula: '0.00001118 \times r \times RPM^{2}'
+    unit: ×g
+```
+
+- 吸取上清转移至预冷 EP 管，弃去底部沉淀
+
+#@ 封闭、一抗与二抗孵育
+- 5% 脱脂牛奶室温封闭 1 h；随后加入一抗 4°C 过夜孵育至少 12 h
+- 将羊抗兔 HRP 二抗按 1:5000 比例稀释至终体积 10 mL
+- 用 TBST 在水平摇床上洗膜 3 次，每次 10 min
+
+## 2. 实验讨论与复盘
+- 此前按 1:1000 稀释二抗背景偏高，本次调至 1:5000 并延长 TBST 洗膜时间
+- 根据文献方案，磷酸化蛋白建议使用 5% BSA 替代脱脂牛奶封闭以降低非特异性条带

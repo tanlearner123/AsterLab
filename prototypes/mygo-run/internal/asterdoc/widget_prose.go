@@ -10,29 +10,70 @@ import (
 	"asterlab-mygo-prototype/internal/theme"
 )
 
+// renderUnifiedModuleShell enforces one consistent visual anatomy across all structured
+// scientific modules (group_table, plate, param_table, data_table, calculator, embed_card, etc.):
+//   - Top-level (v.StepID == ""): elevated paper card (Surface + 1px Border + PanelRadius + 12/16px padding)
+//     so structured scientific blocks are unmistakably distinguished from plain Markdown prose.
+//   - Nested inside a Step card (v.StepID != ""): clean hairline section without nested box cages.
+//   - Unified Header Row: [16px Accent Icon] [Editable Title] [Spacer] [Right Meta (tnum)] [Extra Actions]
+//     followed by a 1px hairline divider and consistent Spacing12 body rhythm.
+func renderUnifiedModuleShell(
+	v *View,
+	c *ui.Context,
+	icon *ui.SVG,
+	moduleID string,
+	title string,
+	metaText string,
+	editableTitle bool,
+	extraRight func(),
+	content func(),
+) {
+	tok := theme.GetTokens(c.Theme())
+	isTopLevel := v == nil || v.StepID == ""
+	box := ui.Column(c).FillWidth().Gap(float32(tok.Spacing12))
+	if isTopLevel {
+		box.Padding(float32(tok.Spacing12), float32(tok.Spacing16)).
+			Radius(float32(tok.PanelRadius)).
+			Background(tok.Surface).
+			Border(1, tok.Border)
+	} else {
+		box.Padding(float32(tok.Spacing4), 0)
+	}
+	box.Children(func() {
+		if title != "" || metaText != "" || icon != nil || extraRight != nil {
+			ui.Column(c).FillWidth().Gap(float32(tok.Spacing8)).Children(func() {
+				ui.Row(c).FillWidth().AlignItems(ui.Center).Gap(float32(tok.Spacing8)).Children(func() {
+					if icon != nil {
+						ui.Icon(c, icon).Size(float32(tok.Spacing16), float32(tok.Spacing16)).TextColor(tok.Accent)
+					}
+					if title != "" {
+						renderInlineEditableTitle(v, c, moduleID, title, editableTitle)
+					}
+					ui.Spacer(c)
+					if metaText != "" {
+						ui.Text(c, metaText).FontSize(float32(tok.TextMeta)).TextColor(tok.TextMuted).FontFeatures("tnum").SingleLine()
+					}
+					if extraRight != nil {
+						extraRight()
+					}
+				})
+				ui.Box(c).FillWidth().Height(1).Background(tok.Border.Alpha(0.55))
+			})
+		}
+		content()
+	})
+}
+
 func moduleCardFrame(v *View, c *ui.Context, icon *ui.SVG, title, badgeText string, accentBar *ui.Color, content func()) {
 	t := c.Theme()
 	tok := theme.GetTokens(t)
 	editableTitle := v != nil && v.Mode == ModeDesign && !v.ReadOnly && v.Can(PermDocumentEdit) && v.currentModuleID != ""
 	if v != nil && v.UnifiedLive {
-		// In UnifiedLive canvas, render an open Obsidian-style hairline section without box cages
-		ui.Column(c).FillWidth().Padding(float32(tok.Spacing4), 0).Gap(float32(tok.Spacing8)).Children(func() {
-			if title != "" || badgeText != "" || icon != nil {
-				ui.Row(c).FillWidth().AlignItems(ui.Center).Gap(float32(tok.Spacing8)).Children(func() {
-					if icon != nil {
-						ui.Icon(c, icon).Size(float32(tok.Spacing16), float32(tok.Spacing16)).TextColor(tok.TextMuted)
-					}
-					if title != "" {
-						renderInlineEditableTitle(v, c, v.currentModuleID, title, editableTitle)
-					}
-					ui.Spacer(c)
-					if badgeText != "" {
-						ui.Text(c, badgeText).FontSize(float32(tok.TextMeta)).TextColor(tok.TextMuted).FontFeatures("tnum")
-					}
-				})
-			}
-			content()
-		})
+		modID := ""
+		if v != nil {
+			modID = v.currentModuleID
+		}
+		renderUnifiedModuleShell(v, c, icon, modID, title, badgeText, editableTitle, nil, content)
 		return
 	}
 	ui.Row(c).FillWidth().Radius(float32(tok.PanelRadius)).Background(tok.Surface).
@@ -151,104 +192,75 @@ func (v *View) renderProse(c *ui.Context, data map[string]any) {
 	}
 
 	if v.UnifiedLive {
-		if editable {
-			bodyBuf := v.ensureWidgetDraft("prose:"+moduleID+":body", body)
-			var wrapper ui.Element
-			if barColor != nil {
-				wrapper = ui.Row(c.Key("prose-ed:"+moduleID)).FillWidth().Radius(float32(tok.ControlRadius)).Background(bgColor)
-			} else {
-				wrapper = ui.Column(c.Key("prose-ed:"+moduleID)).FillWidth().Gap(float32(tok.Spacing4))
+		proseReadOnly := !editable
+		var wrapper ui.Element
+		if barColor != nil {
+			wrapper = ui.Row(c.Key("prose-ed:"+moduleID)).FillWidth().Radius(float32(tok.ControlRadius)).Background(bgColor)
+		} else {
+			wrapper = ui.Column(c.Key("prose-ed:"+moduleID)).FillWidth().Gap(float32(tok.Spacing4))
+		}
+		hovered := wrapper.Hovered()
+		renderToneBar := func() {
+			if !editable {
+				return
 			}
-			hovered := wrapper.Hovered()
-			var tb ui.Element
-			hasTB := false
-			renderToneBar := func() {
-				toneOp := float32(0)
-				if hovered || tone != "plain" || v.MobileCompact {
-					toneOp = 1
-				}
-				bar := ui.Row(c.Key("prose-tone:"+moduleID)).FillWidth().AlignItems(ui.Center).Gap(float32(tok.Spacing4))
-				if bar.AnimateTo("pt-op", toneOp, theme.MotionMicroFade) > 0.05 {
-					bar.Opacity(bar.AnimateTo("pt-op", toneOp, theme.MotionMicroFade)).Children(func() {
-						toneChoice := tone
-						sel := components.Select(c, &toneChoice)
-						StyleSelectQuiet(c, tok, sel)
-						sel.Trigger.Children(func() {
-							ui.Text(c, proseToneLabel(toneChoice)).FontSize(float32(tok.TextMeta)).TextColor(tok.TextMuted)
-						})
-						sel.Popup(func(panel ui.Element) {
-							for _, opt := range []string{"plain", "note", "tip", "warning"} {
-								opt := opt
-								sel.Item(opt).Children(func() {
-									ui.Text(c, proseToneLabel(opt)).FontSize(float32(tok.TextMeta)).TextColor(tok.Text)
-								})
-							}
-						})
-						if sel.Trigger.Changed() && toneChoice != tone {
-							v.emitAnyModuleEdit(moduleID, map[string]any{"tone": toneChoice})
+			toneOp := float32(0)
+			if hovered || tone != "plain" || v.MobileCompact {
+				toneOp = 1
+			}
+			bar := ui.Row(c.Key("prose-tone:"+moduleID)).FillWidth().AlignItems(ui.Center).Gap(float32(tok.Spacing4))
+			if bar.AnimateTo("pt-op", toneOp, theme.MotionMicroFade) > 0.05 {
+				bar.Opacity(bar.AnimateTo("pt-op", toneOp, theme.MotionMicroFade)).Children(func() {
+					toneChoice := tone
+					sel := components.Select(c, &toneChoice)
+					StyleSelectQuiet(c, tok, sel)
+					sel.Trigger.Children(func() {
+						ui.Text(c, proseToneLabel(toneChoice)).FontSize(float32(tok.TextMeta)).TextColor(tok.TextMuted)
+					})
+					sel.Popup(func(panel ui.Element) {
+						for _, opt := range []string{"plain", "note", "tip", "warning"} {
+							opt := opt
+							sel.Item(opt).Children(func() {
+								ui.Text(c, proseToneLabel(opt)).FontSize(float32(tok.TextMeta)).TextColor(tok.Text)
+							})
 						}
 					})
-				}
-			}
-			if barColor != nil {
-				wrapper.Children(func() {
-					ui.Box(c).Width(t.Space(0.75)).FillHeight().Background(*barColor)
-					ui.Column(c).Grow(1).MinWidth(0).Padding(float32(tok.Spacing8)).Gap(float32(tok.Spacing4)).Children(func() {
-						renderToneBar()
-						tb = ui.TextAreaBase(c, bodyBuf).FillWidth().Lines(1, 10).
-							Placeholder("输入操作步骤说明或注意事项（新行输入 / 可插入组件）…").TextColor(tok.Text)
-						hasTB = true
-					})
-				})
-			} else {
-				wrapper.Children(func() {
-					renderToneBar()
-					tb = ui.TextAreaBase(c, bodyBuf).FillWidth().Lines(1, 12).
-						Placeholder("输入文字说明（新行输入 / 可插入组件）…").TextColor(tok.Text)
-					hasTB = true
+					if sel.Trigger.Changed() && toneChoice != tone {
+						v.emitAnyModuleEdit(moduleID, map[string]any{"tone": toneChoice})
+					}
 				})
 			}
-			// Slash trigger when typing "/" on an empty prose block or a standalone "/" line
-			if hasTB && v.OnInsertStepBlock != nil {
-				if nextBody, triggered := stripStandaloneSlashLine(*bodyBuf); triggered {
-					*bodyBuf = nextBody
-					v.openSlashMenuForBlock(c, tb, moduleID)
-				}
-			}
-			if hasTB && !tb.Focused() && *bodyBuf != body {
-				v.emitAnyModuleEdit(moduleID, map[string]any{"body": *bodyBuf})
-			}
-			return
 		}
-		// Clean paper reading prose without form borders (supports basic bold/list formatting)
-		renderCleanProseBody := func() {
-			for _, para := range strings.Split(body, "\n") {
-				line := strings.TrimSpace(para)
-				if line == "" {
-					continue
-				}
-				isHeading := false
-				if strings.HasPrefix(line, "### ") {
-					line = strings.TrimSpace(strings.TrimPrefix(line, "### "))
-					isHeading = true
-				} else if strings.HasPrefix(line, "- ") {
-					line = "• " + strings.TrimSpace(strings.TrimPrefix(line, "- "))
-				}
-				txt := ui.Text(c, line).TextColor(tok.Text)
-				if isHeading {
-					txt.FontSize(float32(tok.TextSection)).Bold()
-				} else {
-					txt.FontSize(float32(tok.TextBody))
-				}
-			}
+		renderBody := func() {
+			v.renderLiveMarkdownSegment(
+				c,
+				"step-prose:"+moduleID,
+				body,
+				0,
+				proseReadOnly,
+				!v.ReadOnly,
+				"输入操作步骤说明或注意事项（空行首输入 / 插入组件）…",
+				v.StepID,
+				func(nextBody string) {
+					if nextBody != body {
+						v.emitAnyModuleEdit(moduleID, map[string]any{"body": nextBody})
+					}
+				},
+			)
 		}
 		if barColor != nil {
-			ui.Row(c).FillWidth().Radius(float32(tok.ControlRadius)).Background(bgColor).Children(func() {
+			wrapper.Children(func() {
 				ui.Box(c).Width(t.Space(0.75)).FillHeight().Background(*barColor)
-				ui.Column(c).FillWidth().Gap(float32(tok.Spacing4)).Padding(float32(tok.Spacing8), float32(tok.Spacing12)).Children(renderCleanProseBody)
+				ui.Column(c).Grow(1).MinWidth(0).Padding(float32(tok.Spacing8)).Gap(float32(tok.Spacing4)).Children(func() {
+					renderToneBar()
+					renderBody()
+				})
 			})
 		} else {
-			ui.Column(c).FillWidth().Gap(float32(tok.Spacing4)).Children(renderCleanProseBody)
+			wrapper.Children(func() {
+				renderToneBar()
+				renderBody()
+			})
 		}
 		return
 	}
@@ -377,4 +389,11 @@ func firstNonEmpty(values ...string) string {
 		}
 	}
 	return ""
+}
+
+// inlineBadge wraps components.Badge with AlignSelf(ui.Center) so badges inside
+// horizontally-centered chip strips, headers, and action bars never float to the
+// top edge (overriding onevra Badge's default AlignSelf(ui.Start)).
+func inlineBadge(c *ui.Context, text string, options ...components.BadgeOptions) ui.Element {
+	return components.Badge(c, text, options...).AlignSelf(ui.Center)
 }

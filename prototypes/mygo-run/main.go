@@ -76,6 +76,7 @@ type app struct {
 	syncErr                    string
 	batchView                  string
 	asterDoc                   *asterdoc.FrozenAsterDoc
+	altHoverPreviewQuery       string
 	asterErr                   string
 	pdfExporting               bool
 	pdfExportResults           chan pdfExportResult

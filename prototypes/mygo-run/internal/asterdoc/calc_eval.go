@@ -91,8 +91,12 @@ type formulaParser struct {
 	check  bool
 }
 
-// ValidateFormulaExpr validates arithmetic syntax (+ - * / parentheses, numbers, identifiers).
+// ValidateFormulaExpr validates arithmetic or LaTeX math syntax (+ - * /, \frac, \sqrt, powers, variables).
 func ValidateFormulaExpr(expr string) error {
+	if strings.ContainsAny(expr, `\{}^`) || strings.Contains(expr, "×") || strings.Contains(expr, "÷") || strings.Contains(expr, "·") {
+		_, err := ParseLatexMath(expr)
+		return err
+	}
 	tokens, err := tokenizeFormula(expr)
 	if err != nil {
 		return err
@@ -107,8 +111,11 @@ func ValidateFormulaExpr(expr string) error {
 	return nil
 }
 
-// EvalFormula evaluates an arithmetic formula with provided scalar variables.
+// EvalFormula evaluates an arithmetic or LaTeX math formula with provided scalar variables.
 func EvalFormula(expr string, vars map[string]float64) (float64, error) {
+	if strings.ContainsAny(expr, `\{}^`) || strings.Contains(expr, "×") || strings.Contains(expr, "÷") || strings.Contains(expr, "·") {
+		return EvalLatexMath(expr, vars)
+	}
 	tokens, err := tokenizeFormula(expr)
 	if err != nil {
 		return 0, err
@@ -376,6 +383,32 @@ func collectCalcContextVars(doc *Document, actuals *CalcActualContext) (map[stri
 			vars["plate_wells"] = float64(totalWells)
 			vars["n_wells"] = float64(totalWells)
 		}
+		if g := BuildSciGraph(doc); g != nil {
+			if pl := g.PrimaryPlate(); pl != nil {
+				if pl.SampleWells > 0 {
+					vars["plate_sample_wells"] = float64(pl.SampleWells)
+				}
+				vars["plate_blank_wells"] = float64(pl.BlankWells)
+				if totalWells == 0 && pl.TotalWells > 0 {
+					vars["plate_wells"] = float64(pl.TotalWells)
+					vars["n_wells"] = float64(pl.TotalWells)
+				}
+			}
+			if allSW := g.AllSampleWells(); allSW > 0 {
+				vars["plate_all_sample_wells"] = float64(allSW)
+			}
+			for _, c := range g.Containers {
+				cid := sanitizeCalcVar(c.ID)
+				vars["plate_"+cid+"_sample_wells"] = float64(c.SampleWells)
+				vars["plate_"+cid+"_wells"] = float64(c.TotalWells)
+				vars["plate_"+cid+"_blank_wells"] = float64(c.BlankWells)
+			}
+			// Inject upstream single-document calculator outputs (`@calc.<id>.<key>`)!
+			for _, co := range g.CalcOutputs {
+				varKey := "calc_" + sanitizeCalcVar(co.ModuleID) + "_" + sanitizeCalcVar(co.Key)
+				vars[varKey] = co.Amount
+			}
+		}
 		for gk, cnt := range groupWells {
 			vars["group_"+sanitizeCalcVar(gk)+"_wells"] = float64(cnt)
 		}
@@ -419,7 +452,35 @@ func sanitizeCalcVar(s string) string {
 }
 
 func expandCalcFormulaRefs(expr string) string {
-	out := strings.ReplaceAll(expr, "@plate.wells", "plate_wells")
+	out := strings.ReplaceAll(expr, "@plate.all_sample_wells", "plate_all_sample_wells")
+	out = strings.ReplaceAll(out, "@plate.sample_wells", "plate_sample_wells")
+	out = strings.ReplaceAll(out, "@plate.blank_wells", "plate_blank_wells")
+	out = strings.ReplaceAll(out, "@plate.wells", "plate_wells")
+	// Scoped multi-plate references: @plate.<id>.sample_wells / @plate.<id>.wells / @plate.<id>.blank_wells
+	for {
+		idx := strings.Index(out, "@plate.")
+		if idx < 0 {
+			break
+		}
+		rest := out[idx+len("@plate."):]
+		dot := strings.IndexByte(rest, '.')
+		if dot <= 0 {
+			break
+		}
+		pid := sanitizeCalcVar(rest[:dot])
+		after := rest[dot+1:]
+		matched := false
+		for _, suffix := range []string{"sample_wells", "blank_wells", "wells"} {
+			if strings.HasPrefix(after, suffix) {
+				out = out[:idx] + "plate_" + pid + "_" + suffix + after[len(suffix):]
+				matched = true
+				break
+			}
+		}
+		if !matched {
+			break
+		}
+	}
 	for {
 		idx := strings.Index(out, "@group.")
 		if idx < 0 {
@@ -432,6 +493,28 @@ func expandCalcFormulaRefs(expr string) string {
 		}
 		gid := sanitizeCalcVar(rest[:end])
 		out = out[:idx] + "group_" + gid + "_wells" + rest[end+len(".wells"):]
+	}
+	for {
+		idx := strings.Index(out, "@calc.")
+		if idx < 0 {
+			break
+		}
+		rest := out[idx+len("@calc."):]
+		dot := strings.IndexByte(rest, '.')
+		if dot <= 0 {
+			break
+		}
+		modID := sanitizeCalcVar(rest[:dot])
+		after := rest[dot+1:]
+		end := 0
+		for end < len(after) && (unicode.IsLetter(rune(after[end])) || unicode.IsDigit(rune(after[end])) || after[end] == '_') {
+			end++
+		}
+		if end == 0 {
+			break
+		}
+		rowKey := sanitizeCalcVar(after[:end])
+		out = out[:idx] + "calc_" + modID + "_" + rowKey + after[end:]
 	}
 	for {
 		idx := strings.Index(out, "@param.")

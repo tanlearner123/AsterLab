@@ -5,6 +5,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/egoist/mygo/ui"
 	"github.com/egoist/mygo/ui/markdown"
@@ -88,15 +89,22 @@ type View struct {
 	AssetZoom            float32
 	assetOpen            bool
 	// UnifiedLive enables Obsidian Live-Preview single-source document behavior:
+	// AltHoverPreviewQuery optionally forces the Alt+Hover NL->module preview popover on a matching line (visual showcase/testing).
+	AltHoverPreviewQuery string
 	// frameless prose/checklist, inline auto-save, hover block handles & `+` lines,
 	// layer-based plate editing, table column popovers, and Ctrl+V figure paste.
 	UnifiedLive        bool
+	LabMode            bool // Anti-accidental-edit lab execution shield: locks existing prose/structure while opening execution slots & blank note areas
 	MobileCompact      bool
 	DocumentTitle      string
 	SearchQuery        string
 	DefaultPlateFormat int
 	DefaultExcessPct   int
 	ScrollToStepID     string
+	SlashItems             []SlashCommandItem
+	VaultCompletionTargets []string
+	OnExecuteSlash         func(item SlashCommandItem, stepID string, insertOffset int)
+	OnAttachPhotoToWell    func(plateID string, wells []string)
 	OnDuplicateBlock   func(stepID, blockID string)
 	OnImportAssetBytes func(data []byte, origName string) (string, error)
 	OnPickAttachmentFile func(stepID, blockID string)
@@ -106,9 +114,17 @@ type View struct {
 	OnSlashInsert      func(stepID string, afterIndex int, block map[string]any)
 	PantryLocationMap  map[string]string // reagent code/name -> human box/slot location
 	HideStepHeader     bool
-	stepCollapsed      map[string]bool
+	stepCollapsed       map[string]bool
+	liveEditors         map[string]*liveEditorEntry
+	nlHover             *nlHoverState
+	lastFocusedLiveKey  string
+	lastActiveTailKey   string
+	pendingFocusLiveKey string
+	pendingInjectSlash  bool
+	labBlankNotes       map[string]bool
 	widgetTextDrafts   map[string]*string
 	widgetBoolDrafts   map[string]*bool
+	anchorClock        map[string]time.Time // live single-document runtime timestamps for {#t0} etc.
 	svgCache           map[string]*ui.SVG
 	imgCache           map[string]ui.ImageSource
 	imgLoading         map[string]bool
@@ -208,20 +224,472 @@ func (v *View) PlateColorLayer(plateID string) (colorBy, factorKey string) {
 }
 
 // Render draws the whole document, replacing every asterlab fence with the
-// registered module renderer.
+// registered module renderer. In UnifiedLive mode, renders a true Obsidian-style
+// Live Preview document stream interleaving editable Markdown segments, interactive
+// image/relation embed cards, and native scientific modules.
 func (v *View) Render(c *ui.Context) {
 	if v.Doc == nil {
 		return
 	}
-	src := v.Doc.Source
 	if v.UnifiedLive {
-		if _, fmEnd, hasFM := ScanFrontmatter(src); hasFM && fmEnd <= len(src) {
-			src = src[fmEnd:]
-		}
-		src = stripDuplicateLeadingH1(src, v.DocumentTitle)
+		v.renderUnifiedLiveDocument(c)
+		v.plateOverlay(c)
+		return
 	}
-	protocol.RenderMarkdownWith(c, src, v.codeBlock)
+	protocol.RenderMarkdownWith(c, v.Doc.Source, v.codeBlock)
 	v.plateOverlay(c)
+}
+
+func (v *View) renderUnifiedLiveDocument(c *ui.Context) {
+	tok := theme.GetTokens(c.Theme())
+	registry := v.Registry
+	if registry == nil {
+		registry = BuiltinRegistry()
+	}
+	src := v.Doc.Source
+	// Defer promoting the currently edited line into a standalone SegmentEmbed card while
+	// the user is actively typing on it (so `![[img.png]]{@plate:A1 ...}` never drops focus after `]]`).
+	activeEditOffset := -1
+	if v.liveEditors != nil {
+		for _, ent := range v.liveEditors {
+			if ent != nil && ent.state != nil && !ent.state.ReadOnly && ent.state.Focused() {
+				// Clamp cursor to syncedText length because st.Buffer may hold newly typed bytes
+				// (e.g. `{` right after `]]`) not yet committed to v.Doc.Source in this pass.
+				localCur := min(ent.state.Cursor(), len(ent.syncedText))
+				activeEditOffset = ent.docOffset + localCur
+				break
+			}
+		}
+	}
+	segs := SplitDocumentSegmentsExcludingLine(src, v.Doc, activeEditOffset)
+	stepTree := ParseStepTree(src, v.Doc)
+	resolved := ResolveRelations(v.Doc)
+	resolvedBySpan := make(map[int]ResolvedRelation, len(resolved))
+	for _, rr := range resolved {
+		if rr.SourceKind == "inline" {
+			resolvedBySpan[rr.SpanStart] = rr
+		}
+	}
+	editableDesign := v.Mode == ModeDesign && !v.LabMode && !v.ReadOnly && v.Can(PermDocumentEdit)
+	labWritable := v.LabMode && !v.ReadOnly && v.Can(PermDocumentEdit)
+
+	// Partition Prose segments at step-header / step-exit boundaries ONLY when the document
+	// uses heading steps, so each STEP and Sub-step renders inside a TRUE continuous nested
+	// layout container with unbroken guide rails and strictly aligned indented components!
+	visualSegs := expandSegmentsForStepContainers(src, segs, stepTree)
+
+	// Tightened vertical rhythm: 8px base gap (heading->content = 8px, component<->prose/component = 12px)
+	ui.Column(c).FillWidth().Gap(float32(tok.Spacing8)).Children(func() {
+		renderedTrailingEditableProse := false
+		prevAnchorID := "__start__"
+		embedOrdinal := 0
+
+		renderLeftBlockHandles := func(handleKey string, insertAfterOffset int, moduleID string) {
+			if !editableDesign || v.MobileCompact {
+				return
+			}
+			ui.Row(c.Key("gutter-h:" + handleKey)).AlignItems(ui.Center).Gap(float32(tok.Spacing4) * 0.25).Shrink(0).Children(func() {
+				if len(v.SlashItems) > 0 && v.OnExecuteSlash != nil {
+					plusBtn := components.IconButton(c.Key("gh-add:"+handleKey), lucide.Plus(), "在此块下方插入组件", components.IconButtonCompact)
+					components.Tooltip(c, plusBtn, "在下方插入组件")
+					components.MenuButton(c, plusBtn, func(m *components.Menu) {
+						for _, si := range v.SlashItems {
+							si := si
+							if m.Item(si.Label + "  (" + si.Slash + ")").Chosen() {
+								v.OnExecuteSlash(si, "", insertAfterOffset)
+							}
+						}
+					})
+				}
+				if moduleID != "" {
+					gripBtn := components.IconButton(c.Key("gh-grip:"+handleKey), lucide.GripVertical(), "块操作菜单", components.IconButtonCompact)
+					components.Tooltip(c, gripBtn, "点击打开块操作菜单")
+					components.MenuButton(c, gripBtn, func(menu *components.Menu) {
+						if menu.Item("上移模块").Chosen() && v.OnChange != nil {
+							if next, err := MoveTopLevelModuleInSource(v.Doc.Source, moduleID, -1); err == nil {
+								v.OnChange(next)
+							}
+						}
+						if menu.Item("下移模块").Chosen() && v.OnChange != nil {
+							if next, err := MoveTopLevelModuleInSource(v.Doc.Source, moduleID, 1); err == nil {
+								v.OnChange(next)
+							}
+						}
+						if menu.Item("复制模块（新 ID）").Chosen() && v.OnChange != nil {
+							if next, _, err := DuplicateTopLevelModuleInSource(v.Doc.Source, moduleID); err == nil {
+								v.OnChange(next)
+							}
+						}
+						menu.Separator()
+						if menu.Item("删除模块").Chosen() && v.OnChange != nil {
+							if next, err := RemoveTopLevelModuleInSource(v.Doc.Source, moduleID); err == nil {
+								v.OnChange(next)
+							}
+						}
+					})
+				}
+			})
+		}
+
+		renderSingleSegment := func(vs visualFlowSeg, isLastVisual bool) {
+			seg := vs.seg
+			switch seg.Kind {
+			case SegmentProse:
+				displayText := seg.Text
+				displayStart := seg.Start
+				if seg.Index == 0 && v.DocumentTitle != "" {
+					if stripped := stripDuplicateLeadingH1(displayText, v.DocumentTitle); stripped != displayText {
+						if idx := strings.Index(displayText, stripped); idx >= 0 {
+							displayStart += idx
+							displayText = stripped
+						}
+					}
+				}
+				editStart := displayStart
+				editEnd := seg.End
+				if vs.isStepHeader {
+					// Step header line: trim leading & trailing newlines so it sits as a crisp 1-line header
+					for strings.HasPrefix(displayText, "\r\n") {
+						editStart += 2
+						displayText = displayText[2:]
+					}
+					for strings.HasPrefix(displayText, "\n") {
+						editStart++
+						displayText = displayText[1:]
+					}
+					for strings.HasSuffix(displayText, "\r\n") {
+						editEnd -= 2
+						displayText = displayText[:len(displayText)-2]
+					}
+					for strings.HasSuffix(displayText, "\n") {
+						editEnd--
+						displayText = displayText[:len(displayText)-1]
+					}
+				} else {
+					if strings.HasPrefix(displayText, "\r\n") {
+						editStart += 2
+						displayText = displayText[2:]
+					} else if strings.HasPrefix(displayText, "\n") {
+						editStart++
+						displayText = displayText[1:]
+					}
+					if !isLastVisual {
+						if strings.HasSuffix(displayText, "\r\n\r\n") {
+							editEnd -= 4
+							displayText = displayText[:len(displayText)-4]
+						} else if strings.HasSuffix(displayText, "\n\n") {
+							editEnd -= 2
+							displayText = displayText[:len(displayText)-2]
+						} else if strings.HasSuffix(displayText, "\r\n") {
+							editEnd -= 2
+							displayText = displayText[:len(displayText)-2]
+						} else if strings.HasSuffix(displayText, "\n") {
+							editEnd--
+							displayText = displayText[:len(displayText)-1]
+						}
+					}
+				}
+				if editEnd < editStart {
+					editStart = seg.End
+					editEnd = seg.End
+				}
+				editText := src[editStart:editEnd]
+				trimmed := strings.TrimSpace(editText)
+				segKey := vs.stableKey
+				if segKey == "" {
+					segKey = "prose-after:" + prevAnchorID
+				}
+				if vs.isStepHeader && vs.stepNode != nil {
+					prevAnchorID = "stephdr-" + vs.stepNode.ID
+				}
+
+				if v.labBlankNotes == nil {
+					v.labBlankNotes = map[string]bool{}
+				}
+				isBlankDoc := len(visualSegs) == 1 && trimmed == ""
+				if labWritable && isBlankDoc {
+					v.labBlankNotes[segKey] = true
+				}
+				if trimmed == "" && !isBlankDoc {
+					if !(isLastVisual && editableDesign) {
+						return
+					}
+				}
+				isReadOnly := v.ReadOnly
+				if v.LabMode {
+					if !v.labBlankNotes[segKey] {
+						isReadOnly = true
+					}
+				} else if !editableDesign {
+					isReadOnly = true
+				}
+				placeholder := ""
+				if editableDesign && isBlankDoc {
+					placeholder = "开始自由记录实验笔记，或在空行首输入 / 插入孔板、分组、参数表、步骤…"
+				} else if editableDesign && isLastVisual && trimmed == "" {
+					placeholder = "继续输入文字，或敲 / 插入科研组件…"
+				} else if labWritable && v.labBlankNotes[segKey] && trimmed == "" {
+					placeholder = "实验空白补记区：直接记录现场观察、偏离说明，或输入 ![[图]]{@孔板:孔位}…"
+				}
+				if isLastVisual && !isReadOnly {
+					renderedTrailingEditableProse = true
+				}
+				v.renderLiveMarkdownSegmentFull(
+					c,
+					segKey,
+					"科学笔记正文",
+					editText,
+					editStart,
+					isReadOnly,
+					!v.ReadOnly,
+					placeholder,
+					"",
+					isLastVisual,
+					func(nextText string) string {
+						if v.Doc == nil || v.OnChange == nil {
+							return ""
+						}
+						if nextSrc, err := ReplaceByteRange(v.Doc.Source, editStart, editEnd, nextText); err == nil {
+							v.OnChange(nextSrc)
+							return nextSrc
+						}
+						return ""
+					},
+					nil,
+				)
+
+			case SegmentEmbed:
+				embedOrdinal++
+				embKey := fmt.Sprintf("embed-%d", embedOrdinal)
+				prevAnchorID = embKey
+				renderedTrailingEditableProse = false
+				embRow := ui.Box(c.Key("top-emb-row:"+embKey)).FillWidth().Padding(float32(tok.Spacing4), 0, 0, 0)
+				embHover := embRow.Hovered()
+				embRow.Children(func() {
+					v.renderEmbedCard(c, seg, resolvedBySpan, editableDesign, !v.ReadOnly)
+					if editableDesign && !v.MobileCompact {
+						op := float32(0)
+						if embHover {
+							op = 1
+						}
+						hWrap := ui.Box(c.Key("emb-hwrap:" + embKey)).
+							Absolute().Left(-float32(tok.Spacing48)-float32(tok.Spacing4)).Top(float32(tok.Spacing8))
+						hWrap.Opacity(hWrap.AnimateTo("ehop", op, theme.MotionMicroFade)).Children(func() {
+							renderLeftBlockHandles(embKey, seg.End, "")
+						})
+					}
+				})
+
+			case SegmentModule:
+				if seg.Module == nil {
+					return
+				}
+				m := seg.Module
+				if m.Kind == "workflow" {
+					return
+				}
+				prevAnchorID = m.ID
+				renderedTrailingEditableProse = false
+				modRow := ui.Box(c.Key("top-mod-row:"+m.ID)).FillWidth().Padding(float32(tok.Spacing4), 0, 0, 0)
+				modHover := modRow.Hovered()
+				modRow.Children(func() {
+					modWrap := ui.Column(c.Key("top-mod:" + m.ID)).FillWidth().Gap(float32(tok.Spacing4))
+					modWrap.Children(func() {
+						v.renderRegisteredModule(c, registry, m.Kind, m.Schema, m.ID, m.Data)
+					})
+					if editableDesign && !v.MobileCompact {
+						op := float32(0)
+						if modHover {
+							op = 1
+						}
+						hWrap := ui.Box(c.Key("mod-hwrap:" + m.ID)).
+							Absolute().Left(-float32(tok.Spacing48)-float32(tok.Spacing4)).Top(float32(tok.Spacing8))
+						hWrap.Opacity(hWrap.AnimateTo("mhop", op, theme.MotionMicroFade)).Children(func() {
+							renderLeftBlockHandles(m.ID, seg.End, m.ID)
+						})
+					}
+					if editableDesign && m.Kind != "workflow" {
+						components.ContextMenu(c, modWrap, func(menu *components.Menu) {
+							if menu.Item("上移模块").Chosen() && v.OnChange != nil {
+								if next, err := MoveTopLevelModuleInSource(v.Doc.Source, m.ID, -1); err == nil {
+									v.OnChange(next)
+								}
+							}
+							if menu.Item("下移模块").Chosen() && v.OnChange != nil {
+								if next, err := MoveTopLevelModuleInSource(v.Doc.Source, m.ID, 1); err == nil {
+									v.OnChange(next)
+								}
+							}
+							if menu.Item("复制模块（新 ID）").Chosen() && v.OnChange != nil {
+								if next, _, err := DuplicateTopLevelModuleInSource(v.Doc.Source, m.ID); err == nil {
+									v.OnChange(next)
+								}
+							}
+							menu.Separator()
+							if menu.Item("删除模块").Chosen() && v.OnChange != nil {
+								if next, err := RemoveTopLevelModuleInSource(v.Doc.Source, m.ID); err == nil {
+									v.OnChange(next)
+								}
+							}
+						})
+					}
+				})
+			}
+		}
+
+		// Render segments recursively into TRUE nested Step / Sub-step containers with
+		// ONE unbroken vertical guide rail per step scope (zero broken dashes, components
+		// strictly aligned with their owning step!).
+		var renderRange func(startIdx, endIdx int)
+		renderRange = func(startIdx, endIdx int) {
+			for i := startIdx; i < endIdx; {
+				vs := visualSegs[i]
+				if vs.isStepHeader && vs.stepNode != nil {
+					sn := vs.stepNode
+					// Find all following visual segments that fall inside this step's [LineStart, ScopeEnd)
+					j := i + 1
+					for j < endIdx && visualSegs[j].seg.Start < sn.ScopeEnd {
+						j++
+					}
+					topGap := float32(0)
+					if i > 0 {
+						if sn.Depth == 0 {
+							topGap = float32(tok.Spacing12)
+						} else {
+							topGap = float32(tok.Spacing8)
+						}
+					}
+					ui.Column(c.Key("step-scope:"+sn.ID)).FillWidth().
+						Padding(topGap, 0, 0, 0).Gap(float32(tok.Spacing8)).Children(func() {
+						// 1. Step header line (at current container's x-axis)
+						renderSingleSegment(vs, i == len(visualSegs)-1)
+						// 2. Step body inside ONE continuous vertical guide rail + clean indent!
+						if j > i+1 {
+							railColor := tok.BorderStrong.Alpha(0.60)
+							railW := float32(1.5)
+							railLeftPad := float32(tok.Spacing8)
+							if sn.Depth == 0 {
+								railColor = tok.Accent.Alpha(0.28)
+								railW = 2
+								railLeftPad = float32(tok.Spacing8)
+							}
+							ui.Row(c.Key("step-body:"+sn.ID)).FillWidth().
+								Padding(0, 0, 0, railLeftPad).
+								AlignItems(ui.Stretch).Gap(float32(tok.Spacing12)).Children(func() {
+								ui.Box(c).Width(railW).Radius(1).Background(railColor).Shrink(0)
+								ui.Column(c).Grow(1).MinWidth(0).Gap(float32(tok.Spacing8)).Children(func() {
+									renderRange(i+1, j)
+								})
+							})
+						}
+					})
+					i = j
+					continue
+				}
+				renderSingleSegment(vs, i == len(visualSegs)-1)
+				i++
+			}
+		}
+		renderRange(0, len(visualSegs))
+
+		// Always-ready Notion-style writable trailing Markdown line in Edit Mode:
+		// Guarantees that after inserting ANY top-level plate/group/calc/step/embed,
+		// the user can immediately keep writing Markdown or type `/` right below it.
+		if editableDesign && !renderedTrailingEditableProse {
+			tailKey := "prose-after:" + prevAnchorID
+			v.renderLiveMarkdownSegmentFull(
+				c,
+				tailKey,
+				"科学笔记正文",
+				"",
+				len(src),
+				false,
+				!v.ReadOnly,
+				"继续输入文字，或敲 / 插入科研组件…",
+				"",
+				true,
+				func(nextText string) string {
+					if v.Doc == nil || v.OnChange == nil || nextText == "" {
+						return ""
+					}
+					sep := "\n"
+					if strings.HasSuffix(v.Doc.Source, "\n\n") {
+						sep = ""
+					} else if !strings.HasSuffix(v.Doc.Source, "\n") {
+						sep = "\n\n"
+					}
+					nextSrc := v.Doc.Source + sep + nextText
+					v.OnChange(nextSrc)
+					return nextSrc
+				},
+				nil,
+			)
+		}
+
+		// Always-ready Lab Mode blank writing slot at the end of the document
+		if labWritable {
+			lastSeg := segs[len(segs)-1]
+			lastSegKey := "prose-after:" + prevAnchorID
+			if lastSeg.Kind != SegmentProse || !v.labBlankNotes[lastSegKey] {
+				labTailKey := "lab-tail-note"
+				draft := v.ensureWidgetDraft(labTailKey, "")
+				commitLabDraft := func(textToSave string) {
+					if strings.TrimSpace(textToSave) == "" || v.OnChange == nil {
+						return
+					}
+					sep := "\n\n"
+					if strings.HasSuffix(src, "\n\n") {
+						sep = ""
+					} else if strings.HasSuffix(src, "\n") {
+						sep = "\n"
+					}
+					nextSrc := src + sep + strings.TrimRight(textToSave, "\r\n") + "\n"
+					*draft = ""
+					if v.liveEditors != nil {
+						delete(v.liveEditors, labTailKey)
+					}
+					v.OnChange(nextSrc)
+				}
+				ui.Column(c.Key("lab-tail-box")).FillWidth().
+					Padding(float32(tok.Spacing8), float32(tok.Spacing12)).
+					Radius(float32(tok.ControlRadius)).
+					Background(tok.Elevated.Alpha(0.45)).
+					Border(1, tok.Border).Gap(float32(tok.Spacing4)).Children(func() {
+					ui.Row(c).FillWidth().AlignItems(ui.Center).Gap(float32(tok.Spacing8)).Children(func() {
+						ui.Icon(c, lucide.PenLine()).Size(float32(tok.Spacing12), float32(tok.Spacing12)).TextColor(tok.Accent)
+						ui.Text(c, "实验空白补记区（原文已锁防误触，此处可自由记录与贴图关联）").
+							FontSize(float32(tok.TextMeta)).TextColor(tok.TextMuted)
+					})
+					v.renderLiveMarkdownSegmentFull(
+						c,
+						labTailKey,
+						"实验空白补记区",
+						*draft,
+						len(src),
+						false,
+						true,
+						"在此记录现场现象、偏离或临时备注（失焦或点击写入自动追加至文档末尾）…",
+						"",
+						true,
+						func(next string) string {
+							*draft = next
+							return ""
+						},
+						func(curText string) {
+							commitLabDraft(curText)
+						},
+					)
+					if strings.TrimSpace(*draft) != "" {
+						ui.Row(c).FillWidth().Justify(ui.End).Children(func() {
+							if components.Button(c, "写入实验记录", components.ButtonSecondary).Clicked() {
+								commitLabDraft(*draft)
+							}
+						})
+					}
+				})
+			}
+		}
+	})
 }
 
 // stripDuplicateLeadingH1 removes a leading Markdown `# Title` line in UnifiedLive
@@ -573,56 +1041,34 @@ func (v *View) plate(c *ui.Context, p *Plate) {
 	idxMap := plateGroupPaletteMap(v.Doc, p)
 	lblMap := PlateGroupLabelMap(v.Doc)
 
-	ui.Row(c).FillWidth().Children(func() {
-		plateCard := ui.Column(c).FillWidth().Gap(float32(tok.Spacing8))
-		if v.UnifiedLive {
-			plateCard.Padding(float32(tok.Spacing4), 0)
-		} else {
-			plateCard.Padding(float32(tok.Spacing12)).Radius(float32(tok.PanelRadius)).Background(tok.Surface).Border(1, tok.Border)
-		}
-		plateCard.Children(func() {
-			ui.Row(c).FillWidth().AlignItems(ui.Center).Gap(float32(tok.Spacing8)).Children(func() {
-				ui.Column(c).Gap(float32(tok.Spacing4)).Children(func() {
-					renderInlineEditableTitle(v, c, p.ID, title, editable)
-					meta := fmt.Sprintf("%d 孔板 · 已排 %d 孔", p.Format, len(p.WellGroups()))
-					switch p.Topology {
-					case "rack_1d":
-						meta = fmt.Sprintf("%d 联管 / 泳道 · 已排 %d 位", geometry.Rows*geometry.Columns, len(p.WellGroups()))
-					case "dish":
-						meta = fmt.Sprintf("%d 区培养皿 · 已排 %d 区", geometry.Rows*geometry.Columns, len(p.WellGroups()))
-					}
-					if p.Timepoint != "" {
-						meta += " · " + p.Timepoint
-					}
-					ui.Text(c, meta).FontSize(float32(tok.TextMeta)).TextColor(tok.TextMuted).FontFeatures("tnum")
-				})
-				ui.Spacer(c)
-				if v.ReadOnly {
-					components.Badge(c, "冻结视图")
-				}
-				if components.IconButton(c, lucide.Maximize2(), "放大孔板", components.IconButtonCompact).Clicked() {
-					v.ExpandedPlate = p.ID
-					v.ExpandedWells = append([]string(nil), selected...)
-					v.PlateZoom = 1
-				}
-			})
+	plateIcon := lucide.Grid2x2()
+	meta := fmt.Sprintf("%d 孔板 · 已排 %d 孔", p.Format, len(p.WellGroups()))
+	switch p.Topology {
+	case "rack_1d":
+		plateIcon = lucide.Rows3()
+		meta = fmt.Sprintf("%d 联管 / 泳道 · 已排 %d 位", geometry.Rows*geometry.Columns, len(p.WellGroups()))
+	case "dish":
+		plateIcon = lucide.CircleDot()
+		meta = fmt.Sprintf("%d 区培养皿 · 已排 %d 区", geometry.Rows*geometry.Columns, len(p.WellGroups()))
+	}
+	if p.Timepoint != "" {
+		meta += " · " + p.Timepoint
+	}
 
+	renderPlateBody := func() {
 			if v.UnifiedLive {
-				ui.Row(c).FillWidth().Wrap().AlignItems(ui.Center).Gap(float32(tok.Spacing4)).Children(func() {
-					ui.Text(c, "图层：").FontSize(float32(tok.TextMeta)).TextColor(tok.TextMuted)
+				ui.Row(c).FillWidth().Wrap().AlignItems(ui.Center).Gap(float32(tok.Spacing8)).Children(func() {
+					ui.Text(c, "图层").FontSize(float32(tok.TextMeta)).TextColor(tok.TextMuted)
 					renderLayerPill := func(key, label string, active bool, onClick func()) {
 						fgCol := tok.TextMuted
 						if active {
-							fgCol = tok.Text
+							fgCol = tok.Accent
 						}
 						btn := ui.ButtonBase(c.Key("pl-lpill:" + p.ID + ":" + key)).
 							Padding(float32(tok.Spacing4)*0.6, float32(tok.Spacing8)).Radius(float32(tok.ControlRadius)).
 							Label(label)
 						if active {
-							ui.Box(c.Key("pl-lpill-bg:"+p.ID)).Absolute().Fill().
-								Radius(float32(tok.ControlRadius)).
-								Background(tok.AccentSoftBg).Border(1, tok.Accent).
-								Transition(theme.SharedPillTransition("pl-layer-pill:" + p.ID))
+							btn.Background(tok.AccentSoftBg).Border(1, tok.Accent)
 						} else {
 							hoverBg := ui.Transparent
 							if btn.Hovered() {
@@ -634,7 +1080,7 @@ func (v *View) plate(c *ui.Context, p *Plate) {
 						fg := btn.AnimateColor("lpfg", fgCol, theme.MotionSnappy)
 						theme.ApplyTactilePress(btn)
 						btn.Children(func() {
-							ui.Text(c, label).FontSize(float32(tok.TextMeta)).Bold().TextColor(fg)
+							ui.Text(c, label).FontSize(float32(tok.TextMeta)).Bold().TextColor(fg).SingleLine()
 						})
 						if btn.Clicked() {
 							onClick()
@@ -694,7 +1140,7 @@ func (v *View) plate(c *ui.Context, p *Plate) {
 			plateGridBox.Children(func() {
 				plateui.View(c, plateui.Props{
 					Wells: wells, Rows: geometry.Rows, Cols: geometry.Columns,
-					Topology: p.Topology, Roles: p.Roles, Interactive: editable,
+					Topology: p.Topology, Roles: p.Roles, Interactive: editable || (v.LabMode && !v.ReadOnly),
 					SelectedIDs: selected,
 					OnSelect: func(ids []string) {
 						v.plateSelections[p.ID] = ids
@@ -725,6 +1171,57 @@ func (v *View) plate(c *ui.Context, p *Plate) {
 						v.togglePlateExcludedWells(p, selected)
 					}
 					m.Separator()
+					// Deterministic sequential plate layout actions (row-major / col-major / optional edge-blank)
+					hasEdgeBlank := false
+					for _, rv := range p.Roles {
+						if strings.EqualFold(rv, "blank") {
+							hasEdgeBlank = true
+							break
+						}
+					}
+					applyRelayout := func(dir PlateLayoutDirection, edgeBlank bool) {
+						nextGroups, nextRoles, _, relErr := RelayoutExistingPlate(v.Doc, p, dir, edgeBlank)
+						if relErr != nil {
+							v.PlateSampleError = relErr.Error()
+							return
+						}
+						v.PlateSampleError = ""
+						gMap := map[string]any{}
+						for gid, ws := range nextGroups {
+							arr := make([]any, len(ws))
+							for i, w := range ws {
+								arr[i] = w
+							}
+							gMap[gid] = arr
+						}
+						rMap := map[string]any{}
+						for w, rv := range nextRoles {
+							rMap[w] = rv
+						}
+						v.emitAnyModuleEdit(p.ID, map[string]any{"groups": gMap, "roles": rMap})
+					}
+					if m.Item("自动顺排：按行横排").Disabled(len(p.Groups) == 0).Chosen() {
+						applyRelayout(LayoutRowMajor, hasEdgeBlank)
+					}
+					if m.Item("自动顺排：按列竖排 (8 道排枪)").Disabled(len(p.Groups) == 0).Chosen() {
+						applyRelayout(LayoutColMajor, hasEdgeBlank)
+					}
+					edgeItemLbl := "自动排版：外周留空防蒸发 (PBS)"
+					if hasEdgeBlank {
+						edgeItemLbl = "自动排版：取消外周留空 (紧凑满排)"
+					}
+					if m.Item(edgeItemLbl).Disabled(len(p.Groups) == 0).Chosen() {
+						applyRelayout(LayoutRowMajor, !hasEdgeBlank)
+					}
+					m.Separator()
+				} else if v.LabMode && !v.ReadOnly {
+					if m.Item("标记 / 取消异常孔").Disabled(len(selected) == 0).Chosen() {
+						v.togglePlateExcludedWells(p, selected)
+					}
+					if v.OnAttachPhotoToWell != nil && m.Item("为所选孔关联照片…").Disabled(len(selected) == 0).Chosen() {
+						v.OnAttachPhotoToWell(p.ID, append([]string(nil), selected...))
+					}
+					m.Separator()
 				}
 				v.buildComponentShareMenu(c, m, "plate", 1, map[string]any{"id": p.ID, "title": p.Title})
 			})
@@ -738,10 +1235,63 @@ func (v *View) plate(c *ui.Context, p *Plate) {
 					ui.Text(c, "拖拽框选或点击行/列号选择孔位，在底部工具条直接输入名称即可标注（可用「+ 追加标签」交叉叠加）。").
 						FontSize(float32(tok.TextMeta)).TextColor(tok.TextMuted)
 				}
+			} else if v.LabMode && !v.ReadOnly && len(selected) > 0 {
+				ui.Row(c).FillWidth().Wrap().AlignItems(ui.Center).Gap(float32(tok.Spacing8)).Children(func() {
+					ui.Text(c, fmt.Sprintf("实验模式已选 %d 孔（设计布局已锁）", len(selected))).
+						FontSize(float32(tok.TextMeta)).TextColor(tok.TextMuted).FontFeatures("tnum")
+					if components.Button(c, "标记 / 取消异常孔", components.ButtonOutline).Clicked() {
+						v.togglePlateExcludedWells(p, selected)
+					}
+					ui.Spacer(c)
+					if components.Button(c, "清除选择", components.ButtonGhost).Clicked() {
+						v.plateSelections[p.ID] = nil
+					}
+				})
+			}
+			// Bidirectional relation strip: show images linked to selected well(s) in both Edit & Lab modes
+			if len(selected) > 0 {
+				v.renderPlateWellRelationsStrip(c, tok, p, selected, !v.ReadOnly)
 			}
 			_ = dark
-		})
-	})
+	}
+	renderUnifiedModuleShell(v, c, plateIcon, p.ID, title, meta, editable, func() {
+		if editable && (p.Topology == "" || p.Topology == "grid_2d") {
+			fmtStr := strconv.Itoa(p.Format)
+			fSel := components.Select(c.Key("plate-fmt:"+p.ID), &fmtStr)
+			StyleSelectQuiet(c, tok, fSel)
+			fSel.Trigger.Children(func() {
+				ui.Text(c, fmt.Sprintf("%d 孔", p.Format)).FontSize(float32(tok.TextMeta)).TextColor(tok.TextMuted).FontFeatures("tnum")
+			})
+			fSel.Popup(func(panel ui.Element) {
+				for _, opt := range []int{4, 6, 12, 24, 48, 96, 384} {
+					opt := opt
+					optStr := strconv.Itoa(opt)
+					fSel.Item(optStr).Children(func() {
+						ui.Text(c, fmt.Sprintf("%d 孔板", opt)).FontSize(float32(tok.TextMeta)).TextColor(tok.Text).FontFeatures("tnum")
+					})
+				}
+			})
+			if fSel.Trigger.Changed() {
+				if nextFmt, err := strconv.Atoi(fmtStr); err == nil && nextFmt != p.Format {
+					patch := map[string]any{"format": nextFmt}
+					// Refresh auto-generated default title like "96 孔板布局" -> "12 孔板布局"
+					if p.Title == fmt.Sprintf("%d 孔板布局", p.Format) || p.Title == fmt.Sprintf("%d 孔板", p.Format) {
+						patch["title"] = fmt.Sprintf("%d 孔板布局", nextFmt)
+					}
+					v.plateSelections[p.ID] = nil
+					v.emitAnyModuleEdit(p.ID, patch)
+				}
+			}
+		}
+		if v.ReadOnly {
+			components.Badge(c, "只读视图")
+		}
+		if components.IconButton(c, lucide.Maximize2(), "放大孔板", components.IconButtonCompact).Clicked() {
+			v.ExpandedPlate = p.ID
+			v.ExpandedWells = append([]string(nil), selected...)
+			v.PlateZoom = 1
+		}
+	}, renderPlateBody)
 }
 
 func (v *View) ownerStepForPlate(plateID string) string {
@@ -852,6 +1402,8 @@ func (v *View) ClearTextDrafts() {
 	if v == nil {
 		return
 	}
+	v.liveEditors = nil
+	v.labBlankNotes = nil
 	v.widgetTextDrafts = nil
 	v.widgetBoolDrafts = nil
 	v.moduleDrafts = nil
@@ -1986,3 +2538,125 @@ func genericPortLabel(name string) string {
 	}
 	return name
 }
+
+type visualFlowSeg struct {
+	seg          DocSegment
+	isStepHeader bool
+	stepNode     *StepNode
+	stableKey    string
+}
+
+// expandSegmentsForStepContainers splits SegmentProse slices at heading-step headers and
+// step-exit boundaries (`## 讨论` / `---`) purely for visual container grouping so every
+// STEP and Sub-step renders inside ONE continuous indented layout container with unbroken
+// guide rails across mixed prose + embedded components.
+func expandSegmentsForStepContainers(source string, segs []DocSegment, stepTree *StepTree) []visualFlowSeg {
+	hasHeadingSteps := false
+	if stepTree != nil {
+		for _, sn := range stepTree.Flat {
+			if sn.SourceKind == "heading" {
+				hasHeadingSteps = true
+				break
+			}
+		}
+	}
+	if !hasHeadingSteps {
+		out := make([]visualFlowSeg, len(segs))
+		for i, s := range segs {
+			out[i] = visualFlowSeg{seg: s}
+		}
+		return out
+	}
+
+	var out []visualFlowSeg
+	chunkCounts := map[string]int{}
+	nextProseKey := func(startOff int) string {
+		ownerKey := "root"
+		if ow := StepOwnerAtOffset(stepTree, startOff); ow != nil {
+			ownerKey = ow.ID
+		}
+		chunkCounts[ownerKey]++
+		return fmt.Sprintf("prose-flow:%s:%d", ownerKey, chunkCounts[ownerKey])
+	}
+
+	for _, seg := range segs {
+		if seg.Kind != SegmentProse {
+			out = append(out, visualFlowSeg{seg: seg})
+			continue
+		}
+		lines := strings.SplitAfter(seg.Text, "\n")
+		curStart := seg.Start
+		off := seg.Start
+		inFence := false
+		fenceTicks := 0
+
+		flushProse := func(end int) {
+			if end <= curStart {
+				return
+			}
+			txt := source[curStart:end]
+			if strings.TrimSpace(txt) == "" && curStart != seg.Start {
+				return
+			}
+			out = append(out, visualFlowSeg{
+				seg: DocSegment{
+					Kind:  SegmentProse,
+					Index: seg.Index,
+					Start: curStart,
+					End:   end,
+					Text:  txt,
+				},
+				stableKey: nextProseKey(curStart),
+			})
+		}
+
+		for _, rawLine := range lines {
+			lineEnd := off + len(rawLine)
+			lineText := strings.TrimRight(rawLine, "\r\n")
+			trimmed := strings.TrimSpace(lineText)
+
+			if !inFence {
+				if ticks := countLeadingBackticks(trimmed); ticks >= 3 {
+					inFence = true
+					fenceTicks = ticks
+					off = lineEnd
+					continue
+				}
+				if sn := stepTree.ByLineStart[off]; sn != nil && sn.SourceKind == "heading" {
+					flushProse(off)
+					out = append(out, visualFlowSeg{
+						seg: DocSegment{
+							Kind:  SegmentProse,
+							Index: seg.Index,
+							Start: off,
+							End:   lineEnd,
+							Text:  rawLine,
+						},
+						isStepHeader: true,
+						stepNode:     sn,
+						stableKey:    "step-hdr:" + sn.ID,
+					})
+					curStart = lineEnd
+					off = lineEnd
+					continue
+				}
+				if (rePlainHeadingLine.MatchString(lineText) || reThematicBreakLine.MatchString(lineText)) && off > curStart {
+					// Exit any open step scope cleanly BEFORE the plain heading or `---` divider
+					if StepOwnerAtOffset(stepTree, curStart) != nil {
+						flushProse(off)
+						curStart = off
+					}
+				}
+			} else {
+				if isClosingBacktickFence(trimmed, fenceTicks) {
+					inFence = false
+					fenceTicks = 0
+				}
+			}
+			off = lineEnd
+		}
+		flushProse(seg.End)
+	}
+	return out
+}
+

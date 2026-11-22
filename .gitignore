@@ -40,3 +40,7 @@
 # Python bytecode (Home controller/test runs)
 __pycache__/
 *.pyc
+
+# Local distilled ONNX model bundles (shipped via release/user override dir, not committed to git)
+*.onnx
+/prototypes/mygo-run/models/nl-router/

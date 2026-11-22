@@ -294,9 +294,9 @@ func (s *Shell) renderMobileGlassTopBar(c *ui.Context, tok theme.Tokens, activeT
 
 		if activeTab != nil && activeTab.Kind == TabFile {
 			if activeTab.Mode == ModeEdit {
-				pillIcon("mode-read", lucide.BookOpen(), "切换到纯净阅读态", false, func() {
+				pillIcon("mode-lab", lucide.FlaskConical(), "切换到实验模式（防误触）", false, func() {
 					s.MobileDockForceNav = false
-					s.SetActiveTabMode(ModeRead)
+					s.SetActiveTabMode(ModeLab)
 				})
 			} else {
 				pillIcon("mode-edit", lucide.PenLine(), "切换到编辑态", true, func() {
@@ -396,10 +396,10 @@ func (s *Shell) renderMobileDockedTopChrome(c *ui.Context, tok theme.Tokens, act
 
 		if activeTab != nil && activeTab.Kind == TabFile {
 			if activeTab.Mode == ModeEdit {
-				readBtn := components.IconButton(c, lucide.BookOpen(), "切换到纯净阅读态", components.IconButtonCompact)
-				if readBtn.Clicked() {
+				labBtn := components.IconButton(c, lucide.FlaskConical(), "切换到实验模式（防误触）", components.IconButtonCompact)
+				if labBtn.Clicked() {
 					s.MobileDockForceNav = false
-					s.SetActiveTabMode(ModeRead)
+					s.SetActiveTabMode(ModeLab)
 				}
 			} else {
 				editBtn := components.IconButton(c, lucide.PenLine(), "切换到编辑态", components.IconButtonCompact)
