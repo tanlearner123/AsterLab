@@ -254,6 +254,8 @@ type app struct {
 	newExpTemplate   string
 	newExpErr        string
 	newExpNudgeSeq   int
+	lastVaultSig     string
+	lastPantrySig    string
 }
 
 func (a *app) nextOp() string {
@@ -2087,20 +2089,52 @@ func (a *app) syncDesignDiskMirror(designID, source string) {
 }
 
 func (a *app) startExternalSyncLoop() {
-	if a.designSvc == nil {
-		return
-	}
 	go func() {
-		ticker := time.NewTicker(2 * time.Second)
+		ticker := time.NewTicker(1200 * time.Millisecond)
 		defer ticker.Stop()
 		for range ticker.C {
 			if a.externalSyncBusy.Swap(true) {
 				continue
 			}
-			a.pollExternalDesignChanges()
+			a.pollVaultExternalChanges()
+			if a.designSvc != nil && a.vault == nil {
+				a.pollExternalDesignChanges()
+			}
 			a.externalSyncBusy.Store(false)
 		}
 	}()
+}
+
+func (a *app) pollVaultExternalChanges() {
+	if a.shell == nil {
+		return
+	}
+	var root, prevVaultSig, prevPantrySig string
+	doneSnap := make(chan struct{})
+	mygo.RunOnMain(func() {
+		defer close(doneSnap)
+		if a.vault != nil {
+			root = a.vault.Root
+			prevVaultSig = a.lastVaultSig
+			prevPantrySig = a.lastPantrySig
+		}
+	})
+	<-doneSnap
+	if strings.TrimSpace(root) == "" {
+		return
+	}
+	nextVaultSig, nextPantrySig := computeVaultDiskSignatures(root)
+	if nextVaultSig == prevVaultSig && nextPantrySig == prevPantrySig {
+		return
+	}
+	mygo.RunOnMain(func() {
+		if a.vault == nil || !strings.EqualFold(filepath.Clean(a.vault.Root), filepath.Clean(root)) {
+			return
+		}
+		if a.applyVaultDiskSignatures(nextVaultSig, nextPantrySig) && a.shell != nil {
+			a.shell.Invalidate()
+		}
+	})
 }
 
 func (a *app) pollExternalDesignChanges() {
@@ -3174,6 +3208,20 @@ func (a *app) currentDesignID() string {
 // thread, so the fetch runs on its own goroutine and the result is applied on
 // the main thread.
 func (a *app) preload() {
+	// Per ADR-0002, when a local `.asterml` Vault is active, it is the sole
+	// source of truth for experiments, calendar, and pantry. Do not overwrite
+	// Shell experiments or surface legacy SQLite "设计服务不可用" errors.
+	if a.vault != nil {
+		if a.runLinkArg != "" {
+			a.openRunWellLink(a.runLinkArg)
+		} else {
+			a.openRunLinkFromEnv()
+		}
+		if a.shell != nil {
+			a.shell.Invalidate()
+		}
+		return
+	}
 	go func() {
 		items, designErr := a.fetchDesigns()
 		projects, projectErr := a.fetchProjects()
@@ -4265,65 +4313,36 @@ func (a *app) applyAsterPlateToDesign(source, plateID string) {
 	}
 }
 
-func (a *app) pantryMetaPath() string {
-	dir := workspaceDataDir()
-	if dir == "" {
-		return ""
-	}
-	return filepath.Join(dir, "pantry-meta.json")
-}
-
 func (a *app) pantryManualsDir() string {
-	dir := workspaceDataDir()
+	dir := a.pantryDataDir()
 	if dir == "" {
 		return ""
 	}
 	return filepath.Join(dir, "pantry-manuals")
 }
 
-func (a *app) pantryBoxesPath() string {
-	dir := workspaceDataDir()
-	if dir == "" {
-		return ""
-	}
-	return filepath.Join(dir, "pantry-boxes.json")
-}
-
 func (a *app) loadPantryBoxes() ([]tools.PantryBox, error) {
-	path := a.pantryBoxesPath()
-	if path == "" {
+	store, err := loadPantryStore(a.pantryDataDir())
+	if err != nil {
+		return nil, err
+	}
+	if store.Boxes == nil {
 		return []tools.PantryBox{}, nil
 	}
-	raw, err := os.ReadFile(path)
-	if err != nil {
-		if os.IsNotExist(err) {
-			return []tools.PantryBox{}, nil
-		}
-		return nil, err
-	}
-	var out []tools.PantryBox
-	if err := json.Unmarshal(raw, &out); err != nil {
-		return nil, err
-	}
-	if out == nil {
-		out = []tools.PantryBox{}
-	}
-	return out, nil
+	return store.Boxes, nil
 }
 
 func (a *app) savePantryBoxes(boxes []tools.PantryBox) error {
-	path := a.pantryBoxesPath()
-	if path == "" {
+	dir := a.pantryDataDir()
+	if dir == "" {
 		return nil
 	}
-	if err := os.MkdirAll(filepath.Dir(path), 0755); err != nil {
-		return err
-	}
-	raw, err := json.MarshalIndent(boxes, "", "  ")
+	store, err := loadPantryStore(dir)
 	if err != nil {
 		return err
 	}
-	if err := os.WriteFile(path, raw, 0644); err != nil {
+	store.Boxes = append([]tools.PantryBox(nil), boxes...)
+	if err := savePantryStore(dir, store); err != nil {
 		return err
 	}
 	a.syncShellOutlineAndPantry()
@@ -4331,40 +4350,33 @@ func (a *app) savePantryBoxes(boxes []tools.PantryBox) error {
 }
 
 func (a *app) loadPantryMeta() (map[string]tools.PantryItemMeta, error) {
-	path := a.pantryMetaPath()
-	if path == "" {
+	store, err := loadPantryStore(a.pantryDataDir())
+	if err != nil {
+		return nil, err
+	}
+	if store.Meta == nil {
 		return map[string]tools.PantryItemMeta{}, nil
 	}
-	raw, err := os.ReadFile(path)
-	if err != nil {
-		if os.IsNotExist(err) {
-			return map[string]tools.PantryItemMeta{}, nil
-		}
-		return nil, err
-	}
-	var out map[string]tools.PantryItemMeta
-	if err := json.Unmarshal(raw, &out); err != nil {
-		return nil, err
-	}
-	if out == nil {
-		out = map[string]tools.PantryItemMeta{}
-	}
-	return out, nil
+	return store.Meta, nil
 }
 
 func (a *app) savePantryMeta(meta map[string]tools.PantryItemMeta) error {
-	path := a.pantryMetaPath()
-	if path == "" {
+	dir := a.pantryDataDir()
+	if dir == "" {
 		return nil
 	}
-	if err := os.MkdirAll(filepath.Dir(path), 0755); err != nil {
-		return err
-	}
-	raw, err := json.MarshalIndent(meta, "", "  ")
+	store, err := loadPantryStore(dir)
 	if err != nil {
 		return err
 	}
-	return os.WriteFile(path, raw, 0644)
+	clean := map[string]tools.PantryItemMeta{}
+	for k, v := range meta {
+		if !isEmptyPantryMeta(v) {
+			clean[k] = v
+		}
+	}
+	store.Meta = clean
+	return savePantryStore(dir, store)
 }
 
 func sanitizePantryToken(s string) string {
@@ -4541,13 +4553,13 @@ func (a *app) newToolsWorkspace() *tools.Workspace {
 			return a.saveToolPlateExport(defaultName, format, data)
 		},
 		ListPantry: func() (runs.PantryLedger, error) {
-			if a.runSvc != nil {
+			if a.vault == nil && a.runSvc != nil {
 				return a.runSvc.ListPantry(context.Background(), runs.PantryQuery{})
 			}
 			return a.localListPantry()
 		},
 		UpsertPantry: func(input runs.PantryUpsert) (runs.PantryItem, error) {
-			if a.runSvc != nil {
+			if a.vault == nil && a.runSvc != nil {
 				return a.runSvc.UpsertPantry(context.Background(), input)
 			}
 			item, err := a.localUpsertPantry(input)
@@ -4557,7 +4569,7 @@ func (a *app) newToolsWorkspace() *tools.Workspace {
 			return item, err
 		},
 		DeletePantry: func(input runs.PantryDelete) error {
-			if a.runSvc != nil {
+			if a.vault == nil && a.runSvc != nil {
 				_, err := a.runSvc.DeletePantry(context.Background(), input)
 				return err
 			}
@@ -4568,7 +4580,7 @@ func (a *app) newToolsWorkspace() *tools.Workspace {
 			return err
 		},
 		ExportPantry: func() (runs.PantryLabels, error) {
-			if a.runSvc != nil {
+			if a.vault == nil && a.runSvc != nil {
 				return a.runSvc.ExportPantryLabels(context.Background(), runs.PantryQuery{})
 			}
 			return a.localExportPantryLabels()

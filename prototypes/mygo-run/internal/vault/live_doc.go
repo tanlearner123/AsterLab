@@ -115,6 +115,28 @@ func (s *DocStore) Evict(relPath string) {
 	s.mu.Unlock()
 }
 
+// ReloadAllExternalChanged checks every cached LiveDocument against disk and
+// reloads any file modified externally (e.g., by an AI Agent or external editor).
+func (s *DocStore) ReloadAllExternalChanged() []string {
+	if s == nil {
+		return nil
+	}
+	s.mu.Lock()
+	snapshot := make([]*LiveDocument, 0, len(s.Docs))
+	for _, ld := range s.Docs {
+		snapshot = append(snapshot, ld)
+	}
+	s.mu.Unlock()
+
+	var changedPaths []string
+	for _, ld := range snapshot {
+		if changed, _ := ld.ReloadIfExternalChanged(); changed {
+			changedPaths = append(changedPaths, ld.RelPath)
+		}
+	}
+	return changedPaths
+}
+
 // ApplyEdit replaces Source (pushing previous Source onto the Undo stack),
 // re-parses the document, and writes atomically to disk.
 func (ld *LiveDocument) ApplyEdit(nextSource string) error {

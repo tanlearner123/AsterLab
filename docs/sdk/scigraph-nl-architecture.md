@@ -92,3 +92,15 @@
    - `SciGraph` 自动构建每孔一行的 `Units / UnitByPlateWell`，孔板标记 `excluded_wells` 异常孔后全链实时剔除：计算器 `@plate.sample_wells`/`@group.<id>.wells` 自动减孔、采图网格自动跳过、数据表矩阵粘贴自动归组并跳过异常孔、`SummarizeWellReadings` 自动做 `Blank` 本底扣除与 `Mean ± SD` 汇总。
 4. **文档心智分工（顶部蓝图 → 步骤就地工具）**：
    - 顶部「实验设计」只放跨步共享的静态对象（`group_table`、`plate`、试剂母液清单）；具体动作工具（`calculator`、`timer`、`attachment`、`data_table`）一律就地放进对应实验步骤中，由 `SciGraph` 后台无缝串联。
+
+## 决策 9：v0.2.0 物理量纲一致性、未分配空板守卫、已录数据锁与统一统计核心
+
+1. **跨计算器物理量纲换算与非法量纲硬阻断（`calc_eval.go` + `scigraph.go`）**：
+   - `@calc.<id>.<key>` 与 `@param.<key>` 传递值同时携带原始物理单位；同量纲（如 `5400 uL -> 5.4 mL`）自动换算并记录轨迹，跨量纲（如 `mg -> mL`）直接返回 `量纲不匹配` 错误，绝不静默参与算术；
+   - 稀释母液继承跨量纲（质量浓度 `mg/mL` 与摩尔浓度 `uM`）时，缺 `MW` 强制拦截并写入 `MissingSlots`，有 `MW` 时自动精确换算。
+2. **未分配空板守卫（`SciContainer.Assigned`）**：
+   - 刚创建、未分配任何实验分组的空孔板标记为 `Assigned: false, SampleWells: 0`，移除旧的静默回退 `SampleWells = Format` 行为；计算器引用 `@plate.sample_wells` 指向空板时给出可执行错误提示。
+3. **已录数据孔板防重排安全锁（`PlateHasRecordedData`）**：
+   - 孔板一旦已记录 `excluded_wells`、孔位 `samples`、`data_table` 读数或 `attachment` 照片，自动重排（`RelayoutExistingPlate`）直接拒绝，防止静默重排导致历史数据归组错乱。
+4. **`astercore.AnalyzeDocument` 统一消费 `SciUnit`**：
+   - 统计核心直接读取 `BuildSciGraph(doc)`，支持多板 `container_ref` / `plate_id`、自动跳过 `excluded_wells`（返回 `ExcludedN`）、自动汇总 `Blank` 本底（`BlankN` / `BlankMean` / `BlankCorrMean`），并显式区分技术复孔数（`TechReplicates`）与独立生物样本数（`BioSamples`）。

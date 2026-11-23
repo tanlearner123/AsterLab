@@ -687,7 +687,7 @@ func (v *View) renderUnifiedDataTable(c *ui.Context, tok theme.Tokens, dark bool
 						})
 						v.emitAnyModuleEdit(moduleID, map[string]any{"columns": nextCols})
 					}
-					if m.Item("粘贴 CSV / TSV 到当前表").Chosen() {
+					if m.Item("从剪贴板粘贴表格数据").Chosen() {
 						clip := c.Services().ReadClipboard()
 						if strings.TrimSpace(clip) != "" {
 							v.applyClipboardToDataTableAt(moduleID, cols, len(authoredRows), 0, 0, clip)
@@ -867,7 +867,8 @@ func (v *View) renderUnifiedDataTable(c *ui.Context, tok theme.Tokens, dark bool
 				rowElem.Background(tok.Text.Alpha(0.025))
 			}
 			rowElem.Children(func() {
-				for _, cm := range cols {
+				for cIdx, cm := range cols {
+					cIdx := cIdx
 					ckey := textValue(cm, "key")
 					vkind := textValue(cm, "value_kind")
 					cunit := textValue(cm, "unit")
@@ -895,9 +896,17 @@ func (v *View) renderUnifiedDataTable(c *ui.Context, tok theme.Tokens, dark bool
 						}
 						cellKey := v.cellDraftKey(moduleID, rIdx, ckey)
 						buf := v.ensureWidgetDraft(cellKey, initStr)
-						if !v.ReadOnly && v.Mode != ModeProtocol {
+						if !v.ReadOnly {
 							tb := BorderlessTextInput(c, tok, buf, float32(tok.TextData), false, "—").FontFeatures("tnum")
 							tb.FocusBind(&v.FocusedTableCell, cellKey)
+							tb.OnPaste(func(text string) bool {
+								if !strings.ContainsAny(text, "\t\n\r") {
+									return false
+								}
+								v.applyClipboardToDataTableAt(moduleID, cols, len(authoredRows), rIdx, cIdx, text)
+								v.flushTableCellsToSource(moduleID, cols, authoredRows)
+								return true
+							})
 							if tb.Submitted() || (!tb.Focused() && strings.TrimSpace(*buf) != strings.TrimSpace(initStr)) {
 								syncRowEdit(rIdx, ckey, *buf)
 							}
@@ -1638,9 +1647,13 @@ func (v *View) renderDataTableMatrix(
 										return false
 									}
 									v.ApplyMatrixClipboardToDataTable(moduleID, pl, cols, authoredRows, valColKey, text)
+									v.flushTableCellsToSource(moduleID, cols, authoredRows)
 									return true
 								})
 								v.setTableCell(moduleID, cellKey, *buf)
+								if tb.Submitted() || (!tb.Focused() && strings.TrimSpace(*buf) != strings.TrimSpace(initStr)) {
+									v.flushTableCellsToSource(moduleID, cols, authoredRows)
+								}
 							} else {
 								disp := firstNonEmpty(*buf, "—")
 								ui.Text(c, disp).FontSize(float32(tok.TextData)).Bold().TextColor(tok.Text).FontFeatures("tnum").SingleLine()

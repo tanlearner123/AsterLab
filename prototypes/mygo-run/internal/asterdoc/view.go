@@ -429,7 +429,7 @@ func (v *View) renderUnifiedLiveDocument(c *ui.Context) {
 				} else if editableDesign && isLastVisual && trimmed == "" {
 					placeholder = "继续输入文字，或敲 / 插入科研组件…"
 				} else if labWritable && v.labBlankNotes[segKey] && trimmed == "" {
-					placeholder = "实验空白补记区：直接记录现场观察、偏离说明，或输入 ![[图]]{@孔板:孔位}…"
+					placeholder = "实验现场补记区：记录观察现象、偏离说明或直接粘贴照片…"
 				}
 				if isLastVisual && !isReadOnly {
 					renderedTrailingEditableProse = true
@@ -559,8 +559,13 @@ func (v *View) renderUnifiedLiveDocument(c *ui.Context) {
 							topGap = float32(tok.Spacing8)
 						}
 					}
-					ui.Column(c.Key("step-scope:"+sn.ID)).FillWidth().
-						Padding(topGap, 0, 0, 0).Gap(float32(tok.Spacing8)).Children(func() {
+					scopeCol := ui.Column(c.Key("step-scope:"+sn.ID)).FillWidth().
+						Padding(topGap, 0, 0, 0).Gap(float32(tok.Spacing8))
+					if v.ScrollToStepID != "" && v.ScrollToStepID == sn.ID {
+						scopeCol.ScrollIntoView()
+						v.ScrollToStepID = ""
+					}
+					scopeCol.Children(func() {
 						// 1. Step header line (at current container's x-axis)
 						renderSingleSegment(vs, i == len(visualSegs)-1)
 						// 2. Step body inside ONE continuous vertical guide rail + clean indent!
@@ -1232,7 +1237,7 @@ func (v *View) plate(c *ui.Context, p *Plate) {
 						v.plateSelections[p.ID] = next
 					}, false, 1, nil)
 				} else {
-					ui.Text(c, "拖拽框选或点击行/列号选择孔位，在底部工具条直接输入名称即可标注（可用「+ 追加标签」交叉叠加）。").
+					ui.Text(c, "拖拽框选或点击行/列号标注孔位，右键可快速排版。").
 						FontSize(float32(tok.TextMeta)).TextColor(tok.TextMuted)
 				}
 			} else if v.LabMode && !v.ReadOnly && len(selected) > 0 {

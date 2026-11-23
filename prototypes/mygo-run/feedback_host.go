@@ -162,10 +162,21 @@ func (a *app) wireFeedbackAndWelcome(rollbackNotice string) {
 		a.shell.FeedbackStatus = "已打开 GitHub 问题提交页面（同时已复制完整报告到剪贴板）"
 	}
 
+	a.shell.OnOpenUserGuide = func() {
+		a.openOrSeedUserGuideDoc()
+	}
+
 	a.shell.OnOnboardingChoice = func(choice string) {
 		markOnboardingSeen()
 		a.shell.WelcomeOpen = false
 		switch choice {
+		case "guide":
+			a.openOrSeedUserGuideDoc()
+		case "tour":
+			a.openOrSeedUserGuideDoc()
+			if a.shell != nil {
+				a.shell.StartTour()
+			}
 		case "demo":
 			a.seedDemoExperimentAndPantry()
 		case "new":
@@ -260,6 +271,9 @@ func (a *app) openExternalAstermlFile(filePath string) {
 		if err := a.initVaultWorkspace(vaultRoot); err != nil {
 			log.Printf("open external .asterml initVaultWorkspace(%s): %v", vaultRoot, err)
 			return
+		}
+		if a.vault != nil {
+			saveLastVaultRoot(a.vault.Root)
 		}
 	}
 	rel, err := filepath.Rel(a.vault.Root, absPath)

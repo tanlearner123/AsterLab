@@ -78,7 +78,7 @@ func BackupLocalData(dataDir, targetVer string) {
 	}
 	dest := filepath.Join(backupRoot, fmt.Sprintf("pre-%s-%d", tag, time.Now().UTC().Unix()))
 	_ = os.MkdirAll(dest, 0o755)
-	for _, name := range []string{"pantry-ledger.json", "update-prefs.json", "onboarding.json", "workspace-session.json"} {
+	for _, name := range []string{"pantry.jsonl", "pantry-ledger.json", "vault-prefs.json", "update-prefs.json", "onboarding.json", "workspace-session.json"} {
 		src := filepath.Join(dataDir, name)
 		if _, err := os.Stat(src); err == nil {
 			_ = copyRegularFile(src, filepath.Join(dest, name))

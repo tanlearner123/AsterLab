@@ -426,25 +426,32 @@ func (s *Shell) obsidianSettingsCategories(c *ui.Context) []components.SettingsC
 					},
 					{
 						ID:          "text-scale",
-						Title:       "界面字体比例",
-						Description: "全局调整实验文档正文、表格与侧栏字号缩放比例。",
-						Keywords:    []string{"font", "scale", "字号", "缩放"},
+						Title:       "界面缩放比例（字体与图标联动）",
+						Description: "全局同步缩放字体、图标、行高与按钮尺寸；支持 Ctrl+= 放大、Ctrl+- 缩小、Ctrl+0 恢复跟随系统。",
+						Keywords:    []string{"font", "scale", "zoom", "字号", "图标", "缩放"},
 						Build: func(c *ui.Context) {
 							scaleStr := fmt.Sprintf("%.2f", s.TextScale)
 							if s.TextScale <= 0 {
 								scaleStr = "0.00"
 							}
-							options := []string{"0.00", "0.90", "1.00", "1.15", "1.25"}
+							options := []string{"0.00", "0.90", "1.00", "1.10", "1.15", "1.25", "1.35", "1.50"}
 							names := map[string]string{
 								"0.00": "跟随系统",
 								"0.90": "90% 紧凑",
 								"1.00": "100% 标准",
+								"1.10": "110% 舒适",
 								"1.15": "115% 清晰",
 								"1.25": "125% 大字",
+								"1.35": "135% 超清",
+								"1.50": "150% 特大",
+							}
+							curLabel := names[scaleStr]
+							if curLabel == "" {
+								curLabel = fmt.Sprintf("%.0f%% 自定义", s.TextScale*100)
 							}
 							sel := components.Select(c, &scaleStr)
-							sel.Trigger.MinWidth(c.Theme().Space(32)).Children(func() {
-								components.Text(c, names[scaleStr]).SingleLine()
+							sel.Trigger.MinWidth(c.Theme().Space(36)).Children(func() {
+								components.Text(c, curLabel).SingleLine()
 							})
 							sel.Popup(func(panel ui.Element) {
 								for _, opt := range options {
@@ -460,10 +467,16 @@ func (s *Shell) obsidianSettingsCategories(c *ui.Context) []components.SettingsC
 									s.TextScale = 0.90
 								case "1.00":
 									s.TextScale = 1.00
+								case "1.10":
+									s.TextScale = 1.10
 								case "1.15":
 									s.TextScale = 1.15
 								case "1.25":
 									s.TextScale = 1.25
+								case "1.35":
+									s.TextScale = 1.35
+								case "1.50":
+									s.TextScale = 1.50
 								default:
 									s.TextScale = 0
 								}

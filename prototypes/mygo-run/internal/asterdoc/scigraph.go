@@ -16,12 +16,14 @@ type SciContainer struct {
 	ID            string
 	Title         string
 	Format        int
+	Assigned      bool // false when plate has zero assigned group wells (unassigned blank plate!)
 	TotalWells    int
 	SampleWells   int // Assigned wells excluding role == "blank" AND excluded_wells
 	BlankWells    int
 	ExcludedWells int
 	BlankSet      map[string]bool
 	ExcludedSet   map[string]bool
+	SampleByWell  map[string]string
 	GroupWells    map[string][]string
 	ByteOffset    int
 }
@@ -34,6 +36,7 @@ type SciUnit struct {
 	WellID    string
 	GroupID   string
 	GroupName string
+	SampleID  string
 	Role      string // "treatment" | "control" | "blank" | "excluded"
 	RepIndex  int    // 1-based technical replicate index within its group
 	Blank     bool
@@ -200,10 +203,24 @@ func (ctx ScientificLineContext) LookupReagentForDilution(name string, targetVal
 			return true
 		}
 		s1, f1 := concFactorToBase(r.StockUnit)
-		if f1 == f2 && f1 != "" {
+		if f1 == f2 && (f1 == "mass_conc" || f1 == "molar") {
 			return r.StockVal*s1 > tBase
 		}
-		return true
+		// Cross-dimension (mass_conc <-> molar): STRICTLY forbidden unless molecular weight MW > 0!
+		if (f1 == "mass_conc" && f2 == "molar") || (f1 == "molar" && f2 == "mass_conc") {
+			if r.MW <= 0 {
+				return false
+			}
+			if f1 == "mass_conc" && f2 == "molar" {
+				// ng/mL -> nM: (ng/mL) / MW(g/mol) * 1000 = nM
+				c1nM := (r.StockVal * s1) * 1000.0 / r.MW
+				return c1nM > tBase
+			}
+			// nM -> ng/mL: nM * MW / 1000
+			c1ngML := (r.StockVal * s1) * r.MW / 1000.0
+			return c1ngML > tBase
+		}
+		return false
 	}
 
 	var proseFallback *SciReagent
@@ -244,9 +261,24 @@ var (
 	reReviewChap    = regexp.MustCompile(`(?i)(讨论|复盘|总结|结论|数据分析|结果分析|discussion|troubleshooting|analysis|review|notes)`)
 	reDesignChap    = regexp.MustCompile(`(?i)(设计|分组|孔板|布局|因子|配液|计算|方案概览|design|layout|setup)`)
 	reKnownReagName   = regexp.MustCompile(`(?i)\b(VEGF|EGF|bFGF|TGF-?β1?|GelMA|LAP|FBS|DMEM|RPMI|PBS|DPBS|DMSO|PFA|BSA|Triton|PMSF|RIPA|IPTG|EDTA|HEPES|Tris|NaCl|DTT|DAPI|CCK-?8|Matrigel|SYBR|Doxorubicin|Cisplatin|Rapamycin|Ampicillin|Kanamycin|Puromycin|Primer|引物|一抗|二抗|多聚甲醛)\b`)
+	reCustomReagStock = regexp.MustCompile(`(?i)([A-Za-z][A-Za-z0-9_-]{1,24})\s*(?:母液|储液|原液|stock|浓缩液)`)
+	reCustomReagDil   = regexp.MustCompile(`(?i)(?:将|把|取)\s*([A-Za-z][A-Za-z0-9_-]{1,24})\s*(?:母液|储液|原液)?\s*(?:稀释|配制|配成|梯度)`)
 	reProseStockCue   = regexp.MustCompile(`(?i)(母液|储液|原液|stock|浓缩液|MW|分子量)`)
 	reProseWorkingCue = regexp.MustCompile(`(?i)(工作浓度|终浓度|工作液|处理浓度|稀释至|稀释到|稀释成)`)
 )
+
+func extractReagentName(text string) string {
+	if m := reKnownReagName.FindString(text); m != "" {
+		return m
+	}
+	if sm := reCustomReagStock.FindStringSubmatch(text); len(sm) >= 2 {
+		return strings.TrimSpace(sm[1])
+	}
+	if sm := reCustomReagDil.FindStringSubmatch(text); len(sm) >= 2 {
+		return strings.TrimSpace(sm[1])
+	}
+	return ""
+}
 
 func needsStepMicroContext(sentence string) bool {
 	if reAnaphoricCue.MatchString(sentence) {
@@ -440,6 +472,7 @@ func populateSciUnits(g *SciGraph) {
 					WellID:    uw,
 					GroupID:   gid,
 					GroupName: gName,
+					SampleID:  c.SampleByWell[uw],
 					Role:      role,
 					RepIndex:  rep,
 					Blank:     isBlank,
@@ -604,7 +637,7 @@ func harvestProseReagents(src string, g *SciGraph) {
 		if !reProseStockCue.MatchString(trim) {
 			continue
 		}
-		reagName := reKnownReagName.FindString(trim)
+		reagName := extractReagentName(trim)
 		if reagName == "" {
 			continue
 		}
@@ -646,14 +679,18 @@ func populateCalcOutputsDAG(doc *Document, g *SciGraph) {
 		return
 	}
 	baseVars := map[string]float64{}
-	if pl := g.PrimaryPlate(); pl != nil {
+	baseUnits := map[string]string{}
+	if pl := g.PrimaryPlate(); pl != nil && pl.Assigned {
 		if pl.SampleWells > 0 {
 			baseVars["plate_sample_wells"] = float64(pl.SampleWells)
+			baseUnits["plate_sample_wells"] = "孔"
 		}
 		baseVars["plate_blank_wells"] = float64(pl.BlankWells)
+		baseUnits["plate_blank_wells"] = "孔"
 		if pl.TotalWells > 0 {
 			baseVars["plate_wells"] = float64(pl.TotalWells)
 			baseVars["n_wells"] = float64(pl.TotalWells)
+			baseUnits["plate_wells"] = "孔"
 		}
 		for gk, ws := range pl.GroupWells {
 			active := 0
@@ -663,16 +700,22 @@ func populateCalcOutputsDAG(doc *Document, g *SciGraph) {
 				}
 			}
 			baseVars["group_"+sanitizeCalcVar(gk)+"_wells"] = float64(active)
+			baseUnits["group_"+sanitizeCalcVar(gk)+"_wells"] = "孔"
 		}
 	}
 	if allSW := g.AllSampleWells(); allSW > 0 {
 		baseVars["plate_all_sample_wells"] = float64(allSW)
+		baseUnits["plate_all_sample_wells"] = "孔"
 	}
 	for _, c := range g.Containers {
+		if !c.Assigned {
+			continue
+		}
 		cid := sanitizeCalcVar(c.ID)
 		baseVars["plate_"+cid+"_sample_wells"] = float64(c.SampleWells)
 		baseVars["plate_"+cid+"_wells"] = float64(c.TotalWells)
 		baseVars["plate_"+cid+"_blank_wells"] = float64(c.BlankWells)
+		baseUnits["plate_"+cid+"_sample_wells"] = "孔"
 	}
 	for _, m := range doc.Modules {
 		if m.Kind == "param_table" {
@@ -681,13 +724,22 @@ func populateCalcOutputsDAG(doc *Document, g *SciGraph) {
 				if k == "" {
 					continue
 				}
+				u := strings.TrimSpace(textValue(rm, "unit"))
 				if n, ok := numericValue(rm["value"]); ok {
 					baseVars[k] = n
 					baseVars["param_"+k] = n
+					if u != "" {
+						baseUnits[k] = u
+						baseUnits["param_"+k] = u
+					}
 				}
 				if act, ok := numericValue(rm["actual"]); ok {
 					baseVars[k] = act
 					baseVars["param_"+k] = act
+					if u != "" {
+						baseUnits[k] = u
+						baseUnits["param_"+k] = u
+					}
 				}
 			}
 		}
@@ -716,8 +768,15 @@ func populateCalcOutputsDAG(doc *Document, g *SciGraph) {
 			if formula == "" {
 				valStr := strings.TrimSpace(fmt.Sprintf("%v", rm["value"]))
 				if strings.HasPrefix(valStr, "@") {
-					if v, exists := localVars[expandCalcFormulaRefs(valStr)]; exists {
-						val, ok = v, true
+					exp := expandCalcFormulaRefs(valStr)
+					if v, exists := localVars[exp]; exists {
+						if fromU := baseUnits[exp]; fromU != "" && unit != "" {
+							if conv, cOK, sameDim := ConvertScientificUnit(v, fromU, unit); cOK && sameDim {
+								val, ok = conv, true
+							}
+						} else {
+							val, ok = v, true
+						}
 					}
 				}
 				if !ok {
@@ -732,6 +791,9 @@ func populateCalcOutputsDAG(doc *Document, g *SciGraph) {
 				localVars[k] = val
 				varKey := "calc_" + midSafe + "_" + sanitizeCalcVar(k)
 				baseVars[varKey] = val
+				if unit != "" {
+					baseUnits[varKey] = unit
+				}
 				g.CalcOutputs = append(g.CalcOutputs, SciCalcOutput{
 					ModuleID:   m.ID,
 					Title:      title,
@@ -786,13 +848,30 @@ func (g *SciGraph) UpstreamCalcOutputs(beforeModuleID string) []SciCalcOutput {
 
 func compilePlateContainer(m Module) SciContainer {
 	sc := SciContainer{
-		ID:          m.ID,
-		Title:       firstNonEmpty(textValue(m.Data, "title"), m.ID),
-		Format:      int(numOrZero(m.Data["format"])),
-		BlankSet:    map[string]bool{},
-		ExcludedSet: map[string]bool{},
-		GroupWells:  map[string][]string{},
-		ByteOffset:  m.Start,
+		ID:           m.ID,
+		Title:        firstNonEmpty(textValue(m.Data, "title"), m.ID),
+		Format:       int(numOrZero(m.Data["format"])),
+		BlankSet:     map[string]bool{},
+		ExcludedSet:  map[string]bool{},
+		SampleByWell: map[string]string{},
+		GroupWells:   map[string][]string{},
+		ByteOffset:   m.Start,
+	}
+	if sm, ok := m.Data["samples"].(map[string]any); ok {
+		for w, sv := range sm {
+			if uw := strings.ToUpper(strings.TrimSpace(w)); uw != "" {
+				if s := strings.TrimSpace(fmt.Sprint(sv)); s != "" {
+					sc.SampleByWell[uw] = s
+				}
+			}
+		}
+	}
+	if m.Plate != nil {
+		for w, s := range m.Plate.Samples {
+			if uw := strings.ToUpper(strings.TrimSpace(w)); uw != "" && strings.TrimSpace(s) != "" {
+				sc.SampleByWell[uw] = strings.TrimSpace(s)
+			}
+		}
 	}
 	blankSet := sc.BlankSet
 	excludedSet := sc.ExcludedSet
@@ -857,11 +936,7 @@ func compilePlateContainer(m Module) SciContainer {
 			sc.SampleWells++
 		}
 	}
-	// If no roles or groups exist yet, fall back to plate format count for SampleWells
-	if sc.TotalWells == 0 && sc.Format > 0 {
-		sc.TotalWells = sc.Format
-		sc.SampleWells = sc.Format
-	}
+	sc.Assigned = sc.TotalWells > 0
 	return sc
 }
 

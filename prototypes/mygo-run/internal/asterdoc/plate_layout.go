@@ -288,12 +288,56 @@ func totalRemainingAfter(groups []PlateLayoutGroupSpec, curID string) int {
 	return sum
 }
 
+// PlateHasRecordedData checks whether plate p already carries experimental execution records
+// (excluded wells, sample labels, well-linked data_table observations, or container_grid attachments).
+// When true, automatic relayout MUST be blocked to prevent silently re-mapping historical data to wrong groups!
+func PlateHasRecordedData(doc *Document, p *Plate) (bool, string) {
+	if p == nil {
+		return false, ""
+	}
+	if len(p.ExcludedWells) > 0 {
+		return true, fmt.Sprintf("已标记 %d 个异常孔", len(p.ExcludedWells))
+	}
+	if len(p.Samples) > 0 {
+		return true, fmt.Sprintf("已录入 %d 个孔位样本编号", len(p.Samples))
+	}
+	if doc == nil {
+		return false, ""
+	}
+	flat, _ := flattenModules(doc.Modules)
+	for _, m := range flat {
+		switch m.Kind {
+		case "data_table":
+			ref := strings.TrimSpace(firstNonEmpty(textValue(m.Data, "container_ref"), textValue(m.Data, "plate_id")))
+			if ref != "" && ref != p.ID {
+				continue
+			}
+			for _, rm := range mapSlice(m.Data["rows"]) {
+				w := strings.TrimSpace(firstNonEmpty(textValue(rm, "well"), textValue(rm, "well_id")))
+				if w != "" {
+					return true, fmt.Sprintf("数据表「%s」已有按孔位记录的读数", firstNonEmpty(textValue(m.Data, "title"), m.ID))
+				}
+			}
+		case "attachment":
+			if textValue(m.Data, "container_ref") == p.ID {
+				if items, ok := m.Data["items"].([]any); ok && len(items) > 0 {
+					return true, fmt.Sprintf("采图网格「%s」已关联 %d 张照片", firstNonEmpty(textValue(m.Data, "title"), m.ID), len(items))
+				}
+			}
+		}
+	}
+	return false, ""
+}
+
 // RelayoutExistingPlate deterministically re-arranges an existing plate@1's groups in row-major
-// or col-major order with optional edge-blank protection. It NEVER silently drops wells: if
-// edgeBlank shrinks capacity below the plate's existing experimental wells, it returns overflow > 0.
+// or col-major order with optional edge-blank protection. It NEVER silently drops wells or
+// mutates a plate that already holds recorded experimental observations/photos.
 func RelayoutExistingPlate(doc *Document, p *Plate, dir PlateLayoutDirection, edgeBlank bool) (groups map[string][]string, roles map[string]string, overflow int, err error) {
 	if p == nil {
 		return nil, nil, 0, fmt.Errorf("未找到孔板")
+	}
+	if hasRec, reason := PlateHasRecordedData(doc, p); hasRec {
+		return nil, nil, 0, fmt.Errorf("无法自动重排：%s，为避免历史数据归组错乱已锁定孔位；请先清空记录或新建孔板", reason)
 	}
 	geom, ok := geometryForPlate(p.Format, p.Topology, p.Rows, p.Columns)
 	if !ok {

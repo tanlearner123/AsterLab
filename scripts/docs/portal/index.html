@@ -655,32 +655,22 @@ figure.shot figcaption {
 <script>
 (() => {
   const OWNER_REPO = "LLLin000/AsterLab";
-  const FALLBACK_BRANCH = "feat/v2-generic-modules";
+  const FALLBACK_BRANCH = "main";
 
   const NAV_GROUPS = [
-    ["Start", [
-      ["docs/HANDBOOK.md", "Overview"],
-      ["docs/handbook/domain-model.md", "领域模型与科学红线"],
+    ["开始使用", [
+      ["docs/guide/index.md", "欢迎使用 AsterLab"],
+      ["docs/guide/install-and-update.md", "下载、安装与更新"],
+      ["docs/guide/quickstart.md", "5 分钟上手"],
     ]],
-    ["Architecture", [
-      ["docs/handbook/architecture.md", "分层架构与代码包"],
-      ["docs/handbook/vault-storage.md", "Vault 存储、索引与快照"],
-      ["docs/handbook/mobile-and-sync.md", "移动端边界与双端同步"],
+    ["核心功能", [
+      ["docs/guide/writing-and-shortcuts.md", "书写笔记、快捷输入与快捷键"],
+      ["docs/guide/plates-and-calculations.md", "孔板布局与配液计算"],
+      ["docs/guide/lab-mode-and-data.md", "实验模式、计时与读数统计"],
+      ["docs/guide/smart-assistant.md", "文字一键变实验工具"],
     ]],
-    ["AsterML SDK", [
-      ["docs/handbook/asterml-spec.md", "AsterML 语法与 Parity"],
-      ["docs/handbook/modules-content.md", "通用内容模块（11 种）"],
-      ["docs/handbook/modules-labware-and-pdf.md", "容器孔板、原语与 PDF"],
-    ]],
-    ["UI & UX", [
-      ["docs/handbook/design-system.md", "Token、色盘与物理动效"],
-      ["docs/handbook/liquid-glass.md", "Liquid Glass 材质规范"],
-      ["docs/handbook/desktop-workbench.md", "桌面端工作台与分屏"],
-      ["docs/handbook/mobile-workspace.md", "移动端单手工作台"],
-    ]],
-    ["Reference", [
-      ["docs/handbook/ffi-and-cli.md", "Pure-Go CLI 与深度链接"],
-      ["docs/handbook/verification-and-backlog.md", "自动化门禁与已关闭热点"],
+    ["速查与问答", [
+      ["docs/guide/menus-and-faq.md", "右键菜单大全 & 常见问题"],
     ]],
   ];
 
@@ -702,7 +692,7 @@ figure.shot figcaption {
   saveTheme((cookieMatch && cookieMatch[1]) || localStorage.getItem("asterlab-docs-theme") || "light");
 
   const params = new URLSearchParams(location.search);
-  let currentDoc = params.get("doc") || "docs/HANDBOOK.md";
+  let currentDoc = params.get("doc") || "docs/guide/index.md";
 
   function normalizeRepoPath(curDocPath, relHref) {
     const baseParts = curDocPath.split("/").slice(0, -1);

@@ -327,7 +327,7 @@ func (s *Shell) renderDrawerLinksAndDiagnostics(c *ui.Context, tok theme.Tokens)
 		ui.Divider(c)
 
 		ui.Row(c).FillWidth().AlignItems(ui.Center).Gap(float32(tok.Spacing4)).Children(func() {
-			components.Text(c, "科学诊断与校验 (AsterCore)").FontSize(float32(tok.TextBody)).Bold().TextColor(tok.Text)
+			components.Text(c, "实验质检与对照检查").FontSize(float32(tok.TextBody)).Bold().TextColor(tok.Text)
 			ui.Spacer(c)
 			components.Badge(c, fmt.Sprintf("%d", len(s.CurrentDiagnostics)))
 		})
@@ -335,7 +335,7 @@ func (s *Shell) renderDrawerLinksAndDiagnostics(c *ui.Context, tok theme.Tokens)
 			ui.Row(c).FillWidth().Padding(float32(tok.Spacing8)).Radius(float32(tok.ControlRadius)).
 				Background(tok.Elevated).AlignItems(ui.Center).Gap(float32(tok.Spacing8)).Children(func() {
 				ui.Icon(c, lucide.CircleCheck()).Size(float32(tok.Spacing16), float32(tok.Spacing16)).TextColor(tok.Success)
-				components.Text(c, "未发现结构阻断或 ARRIVE 对照缺失。").FontSize(float32(tok.TextMeta)).TextColor(tok.Success)
+				components.Text(c, "结构完整，对照与样本量均已就绪。").FontSize(float32(tok.TextMeta)).TextColor(tok.Success)
 			})
 			return
 		}
@@ -356,13 +356,10 @@ func (s *Shell) renderDrawerLinksAndDiagnostics(c *ui.Context, tok theme.Tokens)
 				Background(tok.Elevated).Border(1, sevCol.Alpha(0.32)).Gap(float32(tok.Spacing4)).Children(func() {
 				ui.Row(c).FillWidth().AlignItems(ui.Center).Gap(float32(tok.Spacing4)).Children(func() {
 					ui.Text(c, sevLbl).FontSize(float32(tok.TextMeta)).Bold().TextColor(sevCol)
-					if diag.Code != "" {
-						ui.Text(c, diag.Code).FontSize(float32(tok.TextMeta)).TextColor(tok.TextMuted)
-					}
 				})
 				components.Text(c, diag.Message).FontSize(float32(tok.TextData)).TextColor(tok.Text)
 				if diag.NextAction != "" {
-					components.Text(c, "建议: "+diag.NextAction).FontSize(float32(tok.TextMeta)).TextColor(tok.TextMuted)
+					components.Text(c, "建议："+diag.NextAction).FontSize(float32(tok.TextMeta)).TextColor(tok.TextMuted)
 				}
 			})
 		}

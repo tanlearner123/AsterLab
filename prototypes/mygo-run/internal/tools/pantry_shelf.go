@@ -878,8 +878,14 @@ func renderPantryTableView(c *ui.Context, w *Workspace, tok theme.Tokens) {
 			components.TableRow(c, item.ID, item.Name, false, func(col int) {
 				switch col {
 				case 0:
-					ui.Text(c, item.Name).FontSize(float32(tok.TextBody)).Bold().TextColor(tok.Text).
-						SingleLine().Ellipsis("…").MinWidth(0)
+					nameBtn := ui.ButtonBase(c.Key("pantry-row-open-"+item.ID)).Label("查看 "+item.Name+" 详情").
+						FillWidth().Justify(ui.Start).OnClick(func() {
+						w.OpenPantryDetail(item)
+					})
+					nameBtn.Children(func() {
+						ui.Text(c, item.Name).FontSize(float32(tok.TextBody)).Bold().TextColor(tok.Text).
+							SingleLine().Ellipsis("…").MinWidth(0)
+					})
 				case 1:
 					label := firstNonEmptyStr(meta.CatalogNo, meta.LotNo, "—")
 					if meta.CatalogNo != "" && meta.LotNo != "" {

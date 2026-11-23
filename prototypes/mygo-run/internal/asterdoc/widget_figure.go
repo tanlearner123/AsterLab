@@ -331,7 +331,9 @@ func (v *View) renderUnifiedFigure(c *ui.Context, tok theme.Tokens, moduleID, ti
 		v.FigureZoom = 1
 	}
 
-	hasGraphic := strings.TrimSpace(src) != "" || strings.TrimSpace(svgRaw) != ""
+	trimSVG := strings.TrimSpace(svgRaw)
+	isPlaceholderSVG := trimSVG == "" || (strings.HasPrefix(trimSVG, "<svg") && strings.HasSuffix(trimSVG, "></svg>") && strings.Count(trimSVG, "<") == 2)
+	hasGraphic := strings.TrimSpace(src) != "" || !isPlaceholderSVG
 	card := ui.Column(c.Key("live-fig:"+moduleID)).Focusable().FillWidth().Gap(float32(tok.Spacing8)).
 		Padding(float32(tok.Spacing12)).
 		Radius(float32(tok.PanelRadius)).Background(tok.Surface).Border(1, tok.Border)

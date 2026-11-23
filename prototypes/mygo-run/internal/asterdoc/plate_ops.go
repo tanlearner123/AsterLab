@@ -954,13 +954,28 @@ func (v *View) renderUnifiedPlateFloatingBar(
 		}
 
 		if canEdit && !isLayerMode {
-			groups := plate.GroupNames()
-			if len(groups) > 0 {
-				idxMap := plateGroupPaletteMap(v.Doc, plate)
-				lblMap := PlateGroupLabelMap(v.Doc)
-				dark := c.Theme() != nil && c.Theme().Dark
-				ui.Row(c).FillWidth().Wrap().AlignItems(ui.Center).Gap(float32(tok.Spacing4)).Children(func() {
-					ui.Text(c, "已有分组：").FontSize(float32(tok.TextMeta)).TextColor(tok.TextMuted)
+			var groups []string
+			seenGrp := map[string]bool{}
+			if v.Doc != nil {
+				for _, g := range v.Doc.GroupList() {
+					if g.ID != "" && !seenGrp[g.ID] {
+						seenGrp[g.ID] = true
+						groups = append(groups, g.ID)
+					}
+				}
+			}
+			for _, gid := range plate.GroupNames() {
+				if gid != "" && !seenGrp[gid] {
+					seenGrp[gid] = true
+					groups = append(groups, gid)
+				}
+			}
+			idxMap := plateGroupPaletteMap(v.Doc, plate)
+			lblMap := PlateGroupLabelMap(v.Doc)
+			dark := c.Theme() != nil && c.Theme().Dark
+			ui.Row(c).FillWidth().Wrap().AlignItems(ui.Center).Gap(float32(tok.Spacing4)).Children(func() {
+				if len(groups) > 0 {
+					ui.Text(c, "分组：").FontSize(float32(tok.TextMeta)).TextColor(tok.TextMuted)
 					for _, gid := range groups {
 						gid := gid
 						lbl := firstNonEmpty(lblMap[gid], gid)
@@ -978,8 +993,17 @@ func (v *View) renderUnifiedPlateFloatingBar(
 							setSelected(nil)
 						}
 					}
-				})
-			}
+				}
+				// Compact scientific well role pills directly on selection bar (L1 progressive disclosure)
+				if components.Button(c, "空白(PBS)", components.ButtonGhost).Clicked() {
+					_ = v.applyUnifiedPlateInput(plate, ownerStepID, selected, "空白")
+					setSelected(nil)
+				}
+				if components.Button(c, "异常孔", components.ButtonGhost).Clicked() {
+					v.togglePlateExcludedWells(plate, selected)
+					setSelected(nil)
+				}
+			})
 		}
 
 		if v.PlateSampleError != "" {

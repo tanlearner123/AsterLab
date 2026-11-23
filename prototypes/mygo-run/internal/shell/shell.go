@@ -250,6 +250,11 @@ type Shell struct {
 	OnSubmitFeedback      func()
 	WelcomeOpen           bool
 	OnOnboardingChoice    func(choice string)
+	TourOpen              bool
+	TourStep              int
+	tourAutoOpenedRight   bool
+	OnOpenUserGuide       func()
+	inSplitViewRoot       bool
 	GlobalSearchOpen      bool
 	GlobalSearchQuery     string
 	GlobalSearchLastQuery string
@@ -304,9 +309,9 @@ func (s *Shell) NewWindow() *sidebar.Shell {
 		MinHeight:      600,
 		StateKey:       "asterlab-desk",
 		Theme:          theme.Window,
-		LeftWidth:      264,
-		LeftMinWidth:   200,
-		LeftMaxWidth:   380,
+		LeftWidth:      284,
+		LeftMinWidth:   220,
+		LeftMaxWidth:   400,
 		Left:           s.navigation,
 		Content:        s.page,
 		ContentTitle:   s.topChromeBar,
@@ -314,9 +319,9 @@ func (s *Shell) NewWindow() *sidebar.Shell {
 		LeftToolbar:    s.navigationFooter,
 		Right:          s.rightDrawer,
 		RightHeader:    s.rightDrawerHeader,
-		RightWidth:     360,
-		RightMinWidth:  280,
-		RightMaxWidth:  540,
+		RightWidth:     380,
+		RightMinWidth:  300,
+		RightMaxWidth:  560,
 		RightCollapsed: !s.RightOpen,
 	})
 	return s.window
@@ -333,6 +338,7 @@ func (s *Shell) Invalidate() {
 // Each peer split pane draws its own interactive tab bar cleanly right above its surface.
 func (s *Shell) topChromeBar(c *ui.Context) {
 	s.EnsureTabs()
+	s.syncTourRightDrawer()
 	tok := theme.GetTokens(c.Theme())
 	if s.leafCount() == 1 {
 		if leaf := s.firstLeaf(s.RootPane); leaf != nil {
@@ -345,12 +351,12 @@ func (s *Shell) topChromeBar(c *ui.Context) {
 	}
 
 	ui.Row(c).FillWidth().AlignItems(ui.Center).Gap(float32(tok.Spacing4)).Children(func() {
-		backBtn := components.IconButton(c, lucide.ArrowLeft(), "后退 (Alt+←)", components.IconButtonCompact)
+		backBtn := components.IconButton(c, lucide.ArrowLeft(), "后退 (Alt+←)", components.IconButtonPlain)
 		backBtn.Disabled(!s.CanBack())
 		if backBtn.Clicked() {
 			s.GoBack()
 		}
-		fwdBtn := components.IconButton(c, lucide.ArrowRight(), "前进 (Alt+→)", components.IconButtonCompact)
+		fwdBtn := components.IconButton(c, lucide.ArrowRight(), "前进 (Alt+→)", components.IconButtonPlain)
 		fwdBtn.Disabled(!s.CanForward())
 		if fwdBtn.Clicked() {
 			s.GoForward()
@@ -366,14 +372,14 @@ func (s *Shell) topChromeBar(c *ui.Context) {
 				SingleLine().Ellipsis("…").MaxWidth(float32(tok.Spacing48) * 5)
 		}
 
-		cmdBtn := components.IconButton(c, lucide.Search(), "快速打开 (Ctrl+O)", components.IconButtonCompact)
+		cmdBtn := components.IconButton(c, lucide.Search(), "快速打开 (Ctrl+O)", components.IconButtonPlain)
 		components.Tooltip(c, cmdBtn, "快速打开 (Ctrl+O)")
 		if cmdBtn.Clicked() {
 			s.PaletteOpen = true
 			s.PaletteCursor = 0
 		}
 		if s.window == nil {
-			rdBtn := components.IconButton(c, lucide.PanelRight(), "大纲与速算抽屉", components.IconButtonCompact)
+			rdBtn := components.IconButton(c, lucide.PanelRight(), "大纲与速算抽屉", components.IconButtonPlain)
 			if s.RightOpen {
 				rdBtn.Background(tok.AccentSoftBg)
 			}
@@ -438,10 +444,10 @@ func (s *Shell) handleGlobalShortcuts(c *ui.Context) {
 	}
 	if s.matchHotkey(c, "doc.toggle_mode", parsedHotkey{ui.Cmd, ui.KeyE}) {
 		if t := s.ActiveTab(); t != nil && t.Kind == TabFile {
-			if t.Mode == ModeRead {
-				s.SetActiveTabMode(ModeEdit)
+			if t.Mode == ModeEdit {
+				s.SetActiveTabMode(ModeLab)
 			} else {
-				s.SetActiveTabMode(ModeRead)
+				s.SetActiveTabMode(ModeEdit)
 			}
 		}
 	}
@@ -464,6 +470,40 @@ func (s *Shell) handleGlobalShortcuts(c *ui.Context) {
 	}
 	if s.matchHotkey(c, "app.settings", parsedHotkey{ui.Cmd, ui.KeyComma}) {
 		s.VaultSettingsOpen = !s.VaultSettingsOpen
+	}
+	if c.Shortcut(ui.Cmd, ui.KeyEqual) || c.Shortcut(ui.Cmd|ui.Shift, ui.KeyEqual) {
+		s.StepUIScale(c, 0.10)
+	}
+	if c.Shortcut(ui.Cmd, ui.KeyMinus) {
+		s.StepUIScale(c, -0.10)
+	}
+	if c.Shortcut(ui.Cmd, ui.Key0) {
+		s.TextScale = 0
+		s.SyncThemeLook(c)
+		s.notifySettingsChanged()
+		c.Invalidate()
+	}
+}
+
+// StepUIScale adjusts the unified font+icon UI zoom by delta (clamped to [0.85, 1.50])
+// and persists the choice into Vault settings (standard Ctrl+= / Ctrl+- desktop zoom).
+func (s *Shell) StepUIScale(c *ui.Context, delta float32) {
+	base := s.TextScale
+	if base <= 0 {
+		base = theme.EffectiveScale()
+	}
+	next := float32(int((base+delta)*100+0.5)) / 100.0
+	if next < 0.85 {
+		next = 0.85
+	}
+	if next > 1.50 {
+		next = 1.50
+	}
+	s.TextScale = next
+	s.SyncThemeLook(c)
+	s.notifySettingsChanged()
+	if c != nil {
+		c.Invalidate()
 	}
 }
 
@@ -544,6 +584,9 @@ func (s *Shell) page(c *ui.Context) {
 	s.renderVaultDialogs(c)
 	s.renderFeedbackDialog(c)
 	s.renderWelcomeDialog(c)
+	if !s.inSplitViewRoot {
+		s.renderSpotlightTour(c, tok)
+	}
 	if s.RenderOverlays != nil {
 		s.RenderOverlays(c)
 	}
@@ -617,6 +660,21 @@ func (s *Shell) renderDesktopStatusBar(c *ui.Context, tok theme.Tokens) {
 		if modeLbl != "" {
 			ui.Text(c, modeLbl).FontSize(float32(tok.TextMeta)).TextColor(tok.TextMuted).SingleLine()
 		}
+		guideBtn := ui.ButtonBase(c.Key("status-guide-btn")).Padding(0, float32(tok.Spacing8)).Radius(float32(tok.ControlRadius)).Label("新手指南与界面导览")
+		guideBtn.Children(func() {
+			ui.Row(c).AlignItems(ui.Center).Gap(float32(tok.Spacing4)).Children(func() {
+				ui.Icon(c, lucide.BookOpen()).Size(float32(tok.Spacing12), float32(tok.Spacing12)).TextColor(tok.TextMuted)
+				ui.Text(c, "指南").FontSize(float32(tok.TextMeta)).TextColor(tok.TextMuted).SingleLine()
+			})
+		})
+		components.MenuButton(c, guideBtn, func(m *components.Menu) {
+			if m.Item("1 分钟界面区域导览").Chosen() {
+				s.StartTour()
+			}
+			if s.OnOpenUserGuide != nil && m.Item("打开「新手入门指南」互动文档").Chosen() {
+				s.OnOpenUserGuide()
+			}
+		})
 		fbBtn := ui.ButtonBase(c).Padding(0, float32(tok.Spacing8)).Radius(float32(tok.ControlRadius)).Label("反馈与诊断")
 		fbBtn.Children(func() {
 			ui.Row(c).AlignItems(ui.Center).Gap(float32(tok.Spacing4)).Children(func() {
@@ -721,14 +779,21 @@ func (s *Shell) renderLeafPane(c *ui.Context, tok theme.Tokens, pane *PaneNode) 
 		if dragged, dropped := ui.Drop[fileDragPayload](bodyBox); dropped && !dragged.IsDir && dragged.RelPath != "" {
 			zone := detectDropZone(bodyBox)
 			if zone == "" || zone == "center" {
-				s.OpenFileInPane(pane.ID, dragged.RelPath, dragged.Title, ModeEdit, false)
+				s.OpenFileInPane(pane.ID, dragged.RelPath, dragged.Title, s.DefaultFileOpenMode(), false)
 			} else {
 				s.SplitPaneWithTab(pane.ID, WorkspaceTab{
-					Kind: TabFile, Title: dragged.Title, FilePath: dragged.RelPath, Mode: ModeEdit,
+					Kind: TabFile, Title: dragged.Title, FilePath: dragged.RelPath, Mode: s.DefaultFileOpenMode(),
 				}, zone)
 			}
 		}
 	})
+	// Clicking or interacting inside an unfocused split pane activates it so shortcuts,
+	// file-tree clicks, and the companion outline drawer target the pane the user focused.
+	if !isFocusedPane && (container.Pressed() || container.Clicked()) {
+		s.ActivePaneID = pane.ID
+		s.syncLegacyMirror()
+		s.Invalidate()
+	}
 }
 
 func (s *Shell) renderPaneTabBar(c *ui.Context, tok theme.Tokens, pane *PaneNode) {
@@ -747,12 +812,12 @@ func (s *Shell) renderPaneTabBar(c *ui.Context, tok theme.Tokens, pane *PaneNode
 	bar.Children(func() {
 		// Unified Obsidian Top Bar: compact Back/Forward history controls inline on the left of the tab strip
 		if isFirstPane {
-			backBtn := components.IconButton(c, lucide.ArrowLeft(), "后退 (Alt+←)", components.IconButtonCompact)
+			backBtn := components.IconButton(c, lucide.ArrowLeft(), "后退 (Alt+←)", components.IconButtonPlain)
 			backBtn.Disabled(!s.CanBack())
 			if backBtn.Clicked() {
 				s.GoBack()
 			}
-			fwdBtn := components.IconButton(c, lucide.ArrowRight(), "前进 (Alt+→)", components.IconButtonCompact)
+			fwdBtn := components.IconButton(c, lucide.ArrowRight(), "前进 (Alt+→)", components.IconButtonPlain)
 			fwdBtn.Disabled(!s.CanForward())
 			if fwdBtn.Clicked() {
 				s.GoForward()
@@ -805,14 +870,14 @@ func (s *Shell) renderPaneTabBar(c *ui.Context, tok theme.Tokens, pane *PaneNode
 								if active {
 									icoCol = tok.Accent
 								}
-								ui.Icon(c, icon).Size(float32(tok.Spacing12), float32(tok.Spacing12)).TextColor(icoCol)
+								ui.Icon(c, icon).Size(float32(tok.IconSm), float32(tok.IconSm)).TextColor(icoCol)
 								// Pinned calendar tab renders compactly when space is tight
 								if !(tab.Pinned && tab.Kind == TabCalendar && len(pane.Tabs) > 3) {
 									components.Text(c, tab.Title).FontSize(float32(tok.TextData)).Bold().
 										TextColor(fg).SingleLine().Ellipsis("…").MaxWidth(float32(tok.Spacing48) * 3.8)
 								}
 								if tab.Pinned {
-									ui.Icon(c, lucide.Pin()).Size(float32(tok.Spacing12)*0.85, float32(tok.Spacing12)*0.85).TextColor(tok.TextMuted)
+									ui.Icon(c, lucide.Pin()).Size(float32(tok.IconSm)*0.85, float32(tok.IconSm)*0.85).TextColor(tok.TextMuted)
 								}
 							})
 						})
@@ -881,7 +946,7 @@ func (s *Shell) renderPaneTabBar(c *ui.Context, tok theme.Tokens, pane *PaneNode
 				}
 
 				// Trailing '+' new tab
-				addBtn := components.IconButton(c, lucide.Plus(), "新建实验 (Ctrl+N)", components.IconButtonCompact)
+				addBtn := components.IconButton(c, lucide.Plus(), "新建实验 (Ctrl+N)", components.IconButtonPlain)
 				if addBtn.Clicked() {
 					s.ActivePaneID = pane.ID
 					s.triggerVaultNewFile("")
@@ -903,14 +968,14 @@ func (s *Shell) renderPaneTabBar(c *ui.Context, tok theme.Tokens, pane *PaneNode
 				components.Text(c, s.Error).TextColor(tok.Danger).FontSize(float32(tok.TextMeta)).
 					SingleLine().Ellipsis("…").MaxWidth(float32(tok.Spacing48) * 4)
 			}
-			cmdBtn := components.IconButton(c, lucide.Search(), "快速打开 (Ctrl+O)", components.IconButtonCompact)
+			cmdBtn := components.IconButton(c, lucide.Search(), "快速打开 (Ctrl+O)", components.IconButtonPlain)
 			components.Tooltip(c, cmdBtn, "快速打开 (Ctrl+O)")
 			if cmdBtn.Clicked() {
 				s.PaletteOpen = true
 				s.PaletteCursor = 0
 			}
 			if s.window == nil {
-				rdBtn := components.IconButton(c, lucide.PanelRight(), "大纲与速算抽屉", components.IconButtonCompact)
+				rdBtn := components.IconButton(c, lucide.PanelRight(), "大纲与速算抽屉", components.IconButtonPlain)
 				components.Tooltip(c, rdBtn, "大纲与速算抽屉")
 				if s.RightOpen {
 					rdBtn.Background(tok.AccentSoftBg)
@@ -1002,11 +1067,14 @@ func (s *Shell) RenderSplitView(c *ui.Context) {
 		s.renderMobileWorkbench(c, tok)
 		return
 	}
+	s.inSplitViewRoot = true
+	defer func() { s.inSplitViewRoot = false }()
+	s.syncTourRightDrawer()
 	root := ui.Row(c).Fill()
 	theme.PaintCanvasBackground(root, tok)
 	root.Children(func() {
 		// Content/Sidebar panels stay crisp solid structural surfaces (no stacked glass-on-glass washout)
-		leftCol := ui.Column(c).Width(264).FillHeight().
+		leftCol := ui.Column(c).Width(284).FillHeight().
 			Background(tok.RailBackground).Border(1, tok.Border.Alpha(0.75))
 		leftCol.Children(func() {
 			ui.Box(c).Grow(1).FillWidth().Children(func() {
@@ -1041,6 +1109,7 @@ func (s *Shell) RenderSplitView(c *ui.Context) {
 				})
 			})
 		}
+		s.renderSpotlightTour(c, tok)
 	})
 }
 

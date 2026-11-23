@@ -1,10 +1,16 @@
 package main
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
 	"fmt"
+	"io/fs"
+	"os"
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"sort"
 	"strings"
 
 	"github.com/egoist/mygo/ui"
@@ -31,21 +37,84 @@ func defaultTemplateSeeds() map[string]string {
 	}
 }
 
+type vaultPrefs struct {
+	LastVaultRoot string `json:"lastVaultRoot,omitempty"`
+}
+
+func vaultPrefsPath() string {
+	dir := workspaceDataDir()
+	if dir == "" {
+		return ""
+	}
+	return filepath.Join(dir, "vault-prefs.json")
+}
+
+func loadLastVaultRoot() string {
+	if strings.TrimSpace(os.Getenv("ASTERLAB_VAULT_DIR")) != "" {
+		return ""
+	}
+	p := vaultPrefsPath()
+	if p == "" {
+		return ""
+	}
+	raw, err := os.ReadFile(p)
+	if err != nil {
+		return ""
+	}
+	var prefs vaultPrefs
+	if json.Unmarshal(raw, &prefs) != nil {
+		return ""
+	}
+	root := strings.TrimSpace(prefs.LastVaultRoot)
+	if root == "" {
+		return ""
+	}
+	if info, err := os.Stat(root); err == nil && info.IsDir() {
+		return root
+	}
+	return ""
+}
+
+func saveLastVaultRoot(root string) {
+	root = strings.TrimSpace(root)
+	p := vaultPrefsPath()
+	if root == "" || p == "" {
+		return
+	}
+	_ = os.MkdirAll(filepath.Dir(p), 0o755)
+	if raw, err := json.MarshalIndent(vaultPrefs{LastVaultRoot: root}, "", "  "); err == nil {
+		_ = asterdoc.WriteFileAtomic(p, raw)
+	}
+}
+
 func (a *app) initVaultWorkspace(vaultRoot string) error {
+	if strings.TrimSpace(vaultRoot) == "" {
+		if saved := loadLastVaultRoot(); saved != "" {
+			vaultRoot = saved
+		}
+	}
 	v, err := vault.Open(vaultRoot)
 	if err != nil {
 		return err
 	}
 	_ = v.SeedTemplates(defaultTemplateSeeds())
-	if dataDir := workspaceDataDir(); dataDir != "" {
+	_ = v.SeedAgentGuide()
+	// Only migrate legacy `%LOCALAPPDATA%/AsterLab/data/experiments` into the default
+	// built-in Vault; never pollute user-chosen / freshly created Vault directories.
+	if dataDir := workspaceDataDir(); dataDir != "" &&
+		strings.EqualFold(filepath.Clean(v.Root), filepath.Clean(vault.DefaultVaultDir())) {
 		_, _ = v.MigrateLegacyExperiments(dataDir)
 	}
 	a.vault = v
 	a.vaultIndex = vault.NewVaultIndex(v)
 	a.docStore = vault.NewDocStore(v)
 	a.ensureLiveViewsMap()
+	if a.tools != nil {
+		a.tools.ResetPantryState()
+	}
 
 	if a.shell != nil {
+		a.shell.Error = ""
 		a.shell.VaultPathInput = v.Root
 		a.shell.HideAssetsInTree = v.Config.HideAssetsInTree
 		a.shell.DefaultProjectDir = v.Config.DefaultProjectDir
@@ -79,12 +148,21 @@ func (a *app) initVaultWorkspace(vaultRoot string) error {
 		}
 		a.shell.SetInitialMobilePrefs(v.Config.MobilePullAction, autoHide, editTb)
 		a.shell.SyncThemeLook(nil)
+		a.shell.ResetWorkspaceForVault()
 		var persist shell.WorkspacePersistState
 		if err := v.LoadWorkspaceJSON(&persist); err == nil {
-			a.shell.RestorePersistState(persist)
+			repaired := a.shell.RestorePersistState(persist)
+			pruned := a.shell.PruneMissingFileTabs(func(rel string) bool {
+				_, statErr := os.Stat(v.AbsPath(rel))
+				return statErr == nil
+			})
+			if repaired || pruned {
+				a.saveVaultWorkspace()
+			}
 		}
 	}
 	a.refreshVaultTreeAndCalendar()
+	a.lastVaultSig, a.lastPantrySig = computeVaultDiskSignatures(v.Root)
 	return nil
 }
 
@@ -174,7 +252,18 @@ func (a *app) refreshVaultTreeAndCalendar() {
 }
 
 func (a *app) syncPantrySnapshotToShell() {
-	if a.shell == nil || a.tools == nil || len(a.tools.Pantry.Items) == 0 {
+	if a.shell == nil {
+		return
+	}
+	if a.tools == nil {
+		a.shell.PantryItems = nil
+		return
+	}
+	if !a.tools.PantryLoaded {
+		a.tools.ReloadPantry()
+	}
+	if len(a.tools.Pantry.Items) == 0 {
+		a.shell.PantryItems = nil
 		return
 	}
 	qItems := make([]shell.QuickPantryItem, 0, len(a.tools.Pantry.Items))
@@ -217,11 +306,8 @@ func (a *app) openVaultFileInActivePane(relPath, title string) {
 			}
 		}
 	}
-	mode := shell.ModeEdit
-	if a.shell.DefaultOpenMode == "read" {
-		mode = shell.ModeRead
-	}
-	a.shell.OpenFileInPane(paneID, relPath, title, mode, true)
+	mode := a.shell.DefaultFileOpenMode()
+	a.shell.OpenFileInPane(paneID, relPath, title, mode, false)
 	a.saveVaultWorkspace()
 }
 
@@ -627,11 +713,123 @@ func (a *app) switchVaultRoot(newPath string) {
 	a.liveEditorSynced = nil
 	a.liveTitleDrafts = nil
 	a.liveDateDrafts = nil
+	a.lastCompanionKey = ""
 	if err := a.initVaultWorkspace(newPath); err != nil {
 		a.syncErr = fmt.Sprintf("切换实验库失败：%v", err)
 		return
 	}
+	if a.vault != nil {
+		saveLastVaultRoot(a.vault.Root)
+	}
 	a.syncErr = ""
+}
+
+// computeVaultDiskSignatures hashes the directory structure + file mtimes/sizes of
+// user-visible `.asterml`/assets files and Vault-local `.asterlab/pantry-*.json` files.
+// Runs safely off the main UI goroutine so external Agent/editor writes appear automatically.
+func computeVaultDiskSignatures(vaultRoot string) (vaultSig, pantrySig string) {
+	if strings.TrimSpace(vaultRoot) == "" {
+		return "", ""
+	}
+	var entries []string
+	_ = filepath.WalkDir(vaultRoot, func(path string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return nil
+		}
+		if path == vaultRoot {
+			return nil
+		}
+		name := d.Name()
+		if d.IsDir() {
+			if name == vault.SystemDirName || strings.HasPrefix(name, ".") {
+				return filepath.SkipDir
+			}
+			rel, rErr := filepath.Rel(vaultRoot, path)
+			if rErr == nil {
+				entries = append(entries, "D:"+filepath.ToSlash(rel))
+			}
+			return nil
+		}
+		if strings.HasPrefix(name, ".") {
+			return nil
+		}
+		rel, rErr := filepath.Rel(vaultRoot, path)
+		if rErr != nil {
+			return nil
+		}
+		slash := filepath.ToSlash(rel)
+		lower := strings.ToLower(name)
+		inAssets := strings.HasPrefix(slash, vault.AssetsDirName+"/")
+		if !inAssets && !strings.HasSuffix(lower, ".asterml") {
+			return nil
+		}
+		info, iErr := d.Info()
+		if iErr != nil {
+			return nil
+		}
+		entries = append(entries, fmt.Sprintf("F:%s:%d:%d", slash, info.Size(), info.ModTime().UnixNano()))
+		return nil
+	})
+	sort.Strings(entries)
+	vh := sha256.New()
+	for _, e := range entries {
+		vh.Write([]byte(e))
+		vh.Write([]byte{'\n'})
+	}
+	vaultSig = hex.EncodeToString(vh.Sum(nil))
+
+	ph := sha256.New()
+	for _, fname := range []string{pantryJSONLFileName, "pantry-ledger.json", "pantry-meta.json", "pantry-boxes.json"} {
+		p := filepath.Join(vaultRoot, vault.SystemDirName, fname)
+		if info, err := os.Stat(p); err == nil {
+			fmt.Fprintf(ph, "%s:%d:%d\n", fname, info.Size(), info.ModTime().UnixNano())
+		} else {
+			fmt.Fprintf(ph, "%s:missing\n", fname)
+		}
+	}
+	pantrySig = hex.EncodeToString(ph.Sum(nil))
+	return vaultSig, pantrySig
+}
+
+// syncVaultDiskChangesNow compares current disk signatures against cached signatures
+// and refreshes the left file tree, calendar, open LiveDocuments, and Vault Pantry on change.
+// Must be called on the main UI thread (or directly in single-threaded tests).
+func (a *app) syncVaultDiskChangesNow() bool {
+	if a.vault == nil || a.vault.Root == "" {
+		return false
+	}
+	nextVaultSig, nextPantrySig := computeVaultDiskSignatures(a.vault.Root)
+	return a.applyVaultDiskSignatures(nextVaultSig, nextPantrySig)
+}
+
+func (a *app) applyVaultDiskSignatures(nextVaultSig, nextPantrySig string) bool {
+	if a.vault == nil || a.vault.Root == "" {
+		return false
+	}
+	vaultChanged := nextVaultSig != "" && nextVaultSig != a.lastVaultSig
+	pantryChanged := nextPantrySig != "" && nextPantrySig != a.lastPantrySig
+	if !vaultChanged && !pantryChanged {
+		return false
+	}
+	a.lastVaultSig = nextVaultSig
+	a.lastPantrySig = nextPantrySig
+
+	if vaultChanged {
+		if a.docStore != nil {
+			for _, rel := range a.docStore.ReloadAllExternalChanged() {
+				a.resetLiveDraftCachesForFile(rel)
+			}
+		}
+		a.lastCompanionKey = ""
+		a.refreshVaultTreeAndCalendar()
+	}
+	if pantryChanged {
+		if a.tools != nil && !a.tools.PantryDialogOpen && !a.tools.PantryBoxDialogOpen {
+			a.tools.ResetPantryState()
+		}
+		a.syncPantrySnapshotToShell()
+	}
+	return true
 }
 
 func (a *app) renderStandalonePantry(c *ui.Context) {

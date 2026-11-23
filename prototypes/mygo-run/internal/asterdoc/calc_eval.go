@@ -4,235 +4,20 @@ import (
 	"fmt"
 	"math"
 	"sort"
-	"strconv"
 	"strings"
 	"unicode"
+
+	"asterlab-mygo-prototype/internal/scimath"
 )
-
-type calcTokenKind int
-
-const (
-	tokNum calcTokenKind = iota
-	tokIdent
-	tokPlus
-	tokMinus
-	tokStar
-	tokSlash
-	tokLParen
-	tokRParen
-)
-
-type calcToken struct {
-	kind calcTokenKind
-	text string
-	num  float64
-}
-
-func tokenizeFormula(expr string) ([]calcToken, error) {
-	trimmed := strings.TrimSpace(expr)
-	if trimmed == "" {
-		return nil, fmt.Errorf("formula cannot be empty")
-	}
-	var tokens []calcToken
-	for i := 0; i < len(trimmed); {
-		r := trimmed[i]
-		if r == ' ' || r == '\t' || r == '\n' || r == '\r' {
-			i++
-			continue
-		}
-		switch r {
-		case '+':
-			tokens = append(tokens, calcToken{kind: tokPlus, text: "+"})
-			i++
-		case '-':
-			tokens = append(tokens, calcToken{kind: tokMinus, text: "-"})
-			i++
-		case '*':
-			tokens = append(tokens, calcToken{kind: tokStar, text: "*"})
-			i++
-		case '/':
-			tokens = append(tokens, calcToken{kind: tokSlash, text: "/"})
-			i++
-		case '(':
-			tokens = append(tokens, calcToken{kind: tokLParen, text: "("})
-			i++
-		case ')':
-			tokens = append(tokens, calcToken{kind: tokRParen, text: ")"})
-			i++
-		default:
-			if (r >= '0' && r <= '9') || r == '.' {
-				start := i
-				for i < len(trimmed) && ((trimmed[i] >= '0' && trimmed[i] <= '9') || trimmed[i] == '.') {
-					i++
-				}
-				val, err := strconv.ParseFloat(trimmed[start:i], 64)
-				if err != nil {
-					return nil, fmt.Errorf("invalid number %q in formula", trimmed[start:i])
-				}
-				tokens = append(tokens, calcToken{kind: tokNum, text: trimmed[start:i], num: val})
-			} else if unicode.IsLetter(rune(r)) || r == '_' {
-				start := i
-				for i < len(trimmed) && (unicode.IsLetter(rune(trimmed[i])) || unicode.IsDigit(rune(trimmed[i])) || trimmed[i] == '_') {
-					i++
-				}
-				tokens = append(tokens, calcToken{kind: tokIdent, text: trimmed[start:i]})
-			} else {
-				return nil, fmt.Errorf("unexpected character %q in formula", string(r))
-			}
-		}
-	}
-	return tokens, nil
-}
-
-type formulaParser struct {
-	tokens []calcToken
-	pos    int
-	vars   map[string]float64
-	check  bool
-}
 
 // ValidateFormulaExpr validates arithmetic or LaTeX math syntax (+ - * /, \frac, \sqrt, powers, variables).
 func ValidateFormulaExpr(expr string) error {
-	if strings.ContainsAny(expr, `\{}^`) || strings.Contains(expr, "×") || strings.Contains(expr, "÷") || strings.Contains(expr, "·") {
-		_, err := ParseLatexMath(expr)
-		return err
-	}
-	tokens, err := tokenizeFormula(expr)
-	if err != nil {
-		return err
-	}
-	p := &formulaParser{tokens: tokens, check: true}
-	if _, err := p.parseExpr(); err != nil {
-		return err
-	}
-	if p.pos != len(p.tokens) {
-		return fmt.Errorf("trailing tokens in formula")
-	}
-	return nil
+	return scimath.Validate(expr)
 }
 
 // EvalFormula evaluates an arithmetic or LaTeX math formula with provided scalar variables.
 func EvalFormula(expr string, vars map[string]float64) (float64, error) {
-	if strings.ContainsAny(expr, `\{}^`) || strings.Contains(expr, "×") || strings.Contains(expr, "÷") || strings.Contains(expr, "·") {
-		return EvalLatexMath(expr, vars)
-	}
-	tokens, err := tokenizeFormula(expr)
-	if err != nil {
-		return 0, err
-	}
-	p := &formulaParser{tokens: tokens, vars: vars}
-	res, err := p.parseExpr()
-	if err != nil {
-		return 0, err
-	}
-	if p.pos != len(p.tokens) {
-		return 0, fmt.Errorf("trailing tokens in formula")
-	}
-	if math.IsNaN(res) || math.IsInf(res, 0) {
-		return 0, fmt.Errorf("formula result is not finite")
-	}
-	return res, nil
-}
-
-func (p *formulaParser) peek() (calcToken, bool) {
-	if p.pos >= len(p.tokens) {
-		return calcToken{}, false
-	}
-	return p.tokens[p.pos], true
-}
-
-func (p *formulaParser) parseExpr() (float64, error) {
-	left, err := p.parseTerm()
-	if err != nil {
-		return 0, err
-	}
-	for {
-		tok, ok := p.peek()
-		if !ok || (tok.kind != tokPlus && tok.kind != tokMinus) {
-			break
-		}
-		p.pos++
-		right, err := p.parseTerm()
-		if err != nil {
-			return 0, err
-		}
-		if tok.kind == tokPlus {
-			left += right
-		} else {
-			left -= right
-		}
-	}
-	return left, nil
-}
-
-func (p *formulaParser) parseTerm() (float64, error) {
-	left, err := p.parseFactor()
-	if err != nil {
-		return 0, err
-	}
-	for {
-		tok, ok := p.peek()
-		if !ok || (tok.kind != tokStar && tok.kind != tokSlash) {
-			break
-		}
-		p.pos++
-		right, err := p.parseFactor()
-		if err != nil {
-			return 0, err
-		}
-		if tok.kind == tokStar {
-			left *= right
-		} else if !p.check {
-			if right == 0 {
-				return 0, fmt.Errorf("division by zero")
-			}
-			left /= right
-		}
-	}
-	return left, nil
-}
-
-func (p *formulaParser) parseFactor() (float64, error) {
-	tok, ok := p.peek()
-	if !ok {
-		return 0, fmt.Errorf("unexpected end of formula expression")
-	}
-	switch tok.kind {
-	case tokPlus:
-		p.pos++
-		return p.parseFactor()
-	case tokMinus:
-		p.pos++
-		v, err := p.parseFactor()
-		return -v, err
-	case tokNum:
-		p.pos++
-		return tok.num, nil
-	case tokIdent:
-		p.pos++
-		if p.check {
-			return 1, nil
-		}
-		v, exists := p.vars[tok.text]
-		if !exists {
-			return 0, fmt.Errorf("missing variable %q", tok.text)
-		}
-		return v, nil
-	case tokLParen:
-		p.pos++
-		v, err := p.parseExpr()
-		if err != nil {
-			return 0, err
-		}
-		closeTok, ok := p.peek()
-		if !ok || closeTok.kind != tokRParen {
-			return 0, fmt.Errorf("unclosed '(' in formula")
-		}
-		p.pos++
-		return v, nil
-	default:
-		return 0, fmt.Errorf("unexpected token %q in formula", tok.text)
-	}
+	return scimath.Eval(expr, vars)
 }
 
 // CalcSampleInput supplies one upstream measured sample concentration (or scalar sample fact).
@@ -335,8 +120,25 @@ func volumeToUL(val float64, unit string) (float64, string, bool) {
 	}
 }
 
+// UnitDimension classifies a scientific unit via internal/scimath.
+func UnitDimension(unit string) (dim string, scale float64, known bool) {
+	d, s, k := scimath.DimensionOf(unit)
+	return string(d), s, k
+}
+
+// ConvertScientificUnit converts val between compatible physical units via internal/scimath.
+func ConvertScientificUnit(val float64, fromUnit, toUnit string) (out float64, ok bool, sameDim bool) {
+	return scimath.Convert(val, fromUnit, toUnit)
+}
+
 func collectCalcContextVars(doc *Document, actuals *CalcActualContext) (map[string]float64, []string) {
+	vars, _, used := collectCalcContextVarsWithUnits(doc, actuals)
+	return vars, used
+}
+
+func collectCalcContextVarsWithUnits(doc *Document, actuals *CalcActualContext) (map[string]float64, map[string]string, []string) {
 	vars := map[string]float64{}
+	varUnits := map[string]string{}
 	var usedActuals []string
 	if doc != nil {
 		flat, _ := flattenModules(doc.Modules)
@@ -350,13 +152,22 @@ func collectCalcContextVars(doc *Document, actuals *CalcActualContext) (map[stri
 					if k == "" {
 						continue
 					}
+					u := strings.TrimSpace(textValue(rm, "unit"))
 					if n, ok := numericValue(rm["value"]); ok {
 						vars[k] = n
 						vars["param_"+k] = n
+						if u != "" {
+							varUnits[k] = u
+							varUnits["param_"+k] = u
+						}
 					}
 					if act, ok := numericValue(rm["actual"]); ok {
 						vars[k] = act
 						vars["param_"+k] = act
+						if u != "" {
+							varUnits[k] = u
+							varUnits["param_"+k] = u
+						}
 					}
 				}
 			case "plate":
@@ -382,13 +193,17 @@ func collectCalcContextVars(doc *Document, actuals *CalcActualContext) (map[stri
 		if totalWells > 0 {
 			vars["plate_wells"] = float64(totalWells)
 			vars["n_wells"] = float64(totalWells)
+			varUnits["plate_wells"] = "孔"
+			varUnits["n_wells"] = "孔"
 		}
 		if g := BuildSciGraph(doc); g != nil {
-			if pl := g.PrimaryPlate(); pl != nil {
+			if pl := g.PrimaryPlate(); pl != nil && pl.Assigned {
 				if pl.SampleWells > 0 {
 					vars["plate_sample_wells"] = float64(pl.SampleWells)
+					varUnits["plate_sample_wells"] = "孔"
 				}
 				vars["plate_blank_wells"] = float64(pl.BlankWells)
+				varUnits["plate_blank_wells"] = "孔"
 				if totalWells == 0 && pl.TotalWells > 0 {
 					vars["plate_wells"] = float64(pl.TotalWells)
 					vars["n_wells"] = float64(pl.TotalWells)
@@ -396,21 +211,32 @@ func collectCalcContextVars(doc *Document, actuals *CalcActualContext) (map[stri
 			}
 			if allSW := g.AllSampleWells(); allSW > 0 {
 				vars["plate_all_sample_wells"] = float64(allSW)
+				varUnits["plate_all_sample_wells"] = "孔"
 			}
 			for _, c := range g.Containers {
+				if !c.Assigned {
+					continue
+				}
 				cid := sanitizeCalcVar(c.ID)
 				vars["plate_"+cid+"_sample_wells"] = float64(c.SampleWells)
 				vars["plate_"+cid+"_wells"] = float64(c.TotalWells)
 				vars["plate_"+cid+"_blank_wells"] = float64(c.BlankWells)
+				varUnits["plate_"+cid+"_sample_wells"] = "孔"
+				varUnits["plate_"+cid+"_wells"] = "孔"
+				varUnits["plate_"+cid+"_blank_wells"] = "孔"
 			}
-			// Inject upstream single-document calculator outputs (`@calc.<id>.<key>`)!
+			// Inject upstream single-document calculator outputs (`@calc.<id>.<key>`) WITH their physical units!
 			for _, co := range g.CalcOutputs {
 				varKey := "calc_" + sanitizeCalcVar(co.ModuleID) + "_" + sanitizeCalcVar(co.Key)
 				vars[varKey] = co.Amount
+				if co.Unit != "" {
+					varUnits[varKey] = co.Unit
+				}
 			}
 		}
 		for gk, cnt := range groupWells {
 			vars["group_"+sanitizeCalcVar(gk)+"_wells"] = float64(cnt)
+			varUnits["group_"+sanitizeCalcVar(gk)+"_wells"] = "孔"
 		}
 	}
 	if actuals != nil {
@@ -421,7 +247,7 @@ func collectCalcContextVars(doc *Document, actuals *CalcActualContext) (map[stri
 		}
 	}
 	sort.Strings(usedActuals)
-	return vars, usedActuals
+	return vars, varUnits, usedActuals
 }
 
 func calcStringSlice(raw any) []string {
@@ -540,7 +366,7 @@ func evalCalculatorRows(doc *Document, data map[string]any, actuals *CalcActualC
 		return CalcResult{}, false
 	}
 	res := CalcResult{Mode: firstNonEmpty(textValue(data, "mode"), "formula")}
-	vars, usedActuals := collectCalcContextVars(doc, actuals)
+	vars, varUnits, usedActuals := collectCalcContextVarsWithUnits(doc, actuals)
 	res.UsedActuals = usedActuals
 
 	var lastSummary string
@@ -554,10 +380,27 @@ func evalCalculatorRows(doc *Document, data map[string]any, actuals *CalcActualC
 			valStr := strings.TrimSpace(fmt.Sprintf("%v", rm["value"]))
 			var val float64
 			var ok bool
+			rowNote := firstNonEmpty(note, "参数")
 			if strings.HasPrefix(valStr, "@") {
 				expanded := expandCalcFormulaRefs(valStr)
 				if v, exists := vars[expanded]; exists {
+					fromU := varUnits[expanded]
+					if fromU != "" && unit != "" {
+						conv, convOK, sameDim := ConvertScientificUnit(v, fromU, unit)
+						if !convOK || !sameDim {
+							res.Err = fmt.Errorf("量纲不兼容：%s 引用 %s（%s），无法直接换算到目标单位 %s", label, valStr, fromU, unit)
+							return res, true
+						}
+						if !strings.EqualFold(strings.ReplaceAll(strings.ReplaceAll(fromU, "µ", "u"), "μ", "u"),
+							strings.ReplaceAll(strings.ReplaceAll(unit, "µ", "u"), "μ", "u")) {
+							rowNote = fmt.Sprintf("联动 %s (%s %s → %s %s)", valStr, formatNumber(round4(v)), fromU, formatNumber(round4(conv)), unit)
+						}
+						v = conv
+					}
 					val, ok = v, true
+				} else if strings.HasPrefix(valStr, "@plate.") {
+					res.Err = fmt.Errorf("%s：孔板尚未分配任何实验孔位，请先在孔板中框选分组", label)
+					return res, true
 				}
 			}
 			if !ok {
@@ -571,7 +414,7 @@ func evalCalculatorRows(doc *Document, data map[string]any, actuals *CalcActualC
 					Label:  label,
 					Amount: round4(val),
 					Unit:   unit,
-					Note:   firstNonEmpty(note, "参数"),
+					Note:   rowNote,
 				})
 			}
 			continue
@@ -960,19 +803,14 @@ func EvalCalculatorWithActuals(doc *Document, data map[string]any, actuals *Calc
 			}
 		}
 		if actuals != nil {
-			if toks, err := tokenizeFormula(expr); err == nil {
-				for _, tok := range toks {
-					if tok.kind != tokIdent {
-						continue
-					}
-					if _, already := vars[tok.text]; already {
-						continue
-					}
-					if av, ok := actuals.Params[tok.text]; ok {
-						vars[tok.text] = av
-						keys = append(keys, tok.text)
-						res.UsedActuals = append(res.UsedActuals, fmt.Sprintf("%s=%s", tok.text, formatNumber(av)))
-					}
+			for _, varName := range scimath.ExtractVars(expr) {
+				if _, already := vars[varName]; already {
+					continue
+				}
+				if av, ok := actuals.Params[varName]; ok {
+					vars[varName] = av
+					keys = append(keys, varName)
+					res.UsedActuals = append(res.UsedActuals, fmt.Sprintf("%s=%s", varName, formatNumber(av)))
 				}
 			}
 		}

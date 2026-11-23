@@ -227,3 +227,269 @@ title: 物理守恒护栏测试
 		t.Fatalf("expected C1>C2 guard to inherit 100 ug/mL stock -> 2.5 uL (NOT working conc 10 ng/mL!), got %+v", sugs)
 	}
 }
+
+func TestV020CrossCalculatorDimensionalConversionAndMismatchBlock(t *testing.T) {
+	src := `---
+asterml: "2.1"
+title: 跨计算器物理量纲换算与拦截测试
+---
+
+` + "```asterlab" + `
+id: calc-vol-ul
+kind: calculator
+schema: 1
+title: 1. 总体积（uL 输出）
+mode: formula
+rows:
+  - key: N
+    label: 孔数
+    kind: input
+    value: 9
+    unit: 孔
+  - key: V_well
+    label: 单孔体积
+    kind: input
+    value: 500
+    unit: uL
+  - key: V_tot
+    label: 总体积
+    kind: formula
+    formula: 'N \times V_{well} \times 1.2'
+    unit: uL
+` + "```" + `
+
+` + "```asterlab" + `
+id: calc-mass-ml
+kind: calculator
+schema: 1
+title: 2. 跨单位自动换算（uL -> mL）
+mode: formula
+rows:
+  - key: V_ml
+    label: 总体积（mL 接收 uL）
+    kind: input
+    value: "@calc.calc-vol-ul.V_tot"
+    unit: mL
+  - key: C_w
+    label: 质量分数
+    kind: input
+    value: 5
+    unit: "% w/v"
+  - key: m_gelma
+    label: 需称冻干粉
+    kind: formula
+    formula: 'C_{w} \times V_{ml} \times 10'
+    unit: mg
+` + "```" + `
+
+` + "```asterlab" + `
+id: calc-bad-dim
+kind: calculator
+schema: 1
+title: 3. 跨量纲非法引用（m_gelma mg -> mL）
+mode: formula
+rows:
+  - key: V_bad
+    label: 错误把质量 mg 当作 mL
+    kind: input
+    value: "@calc.calc-mass-ml.m_gelma"
+    unit: mL
+  - key: out
+    label: 应被阻断
+    kind: formula
+    formula: 'V_{bad} \times 2'
+    unit: mL
+` + "```" + `
+`
+	doc, err := Parse(src)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// 1) Downstream calc-mass-ml should auto-convert 5400 uL -> 5.4 mL -> 5 * 5.4 * 10 = 270 mg!
+	res2 := EvalCalculatorWithActuals(doc, doc.Modules[1].Data, nil)
+	if res2.Err != nil {
+		t.Fatalf("expected uL->mL auto-conversion to succeed, got err: %v", res2.Err)
+	}
+	if math.Abs(res2.Rows[0].Amount-5.4) > 1e-4 {
+		t.Fatalf("expected V_ml auto-converted from 5400 uL to 5.4 mL, got %v", res2.Rows[0].Amount)
+	}
+	if math.Abs(res2.Rows[2].Amount-270.0) > 1e-3 {
+		t.Fatalf("expected m_gelma = 270 mg, got %v", res2.Rows[2].Amount)
+	}
+	if !strings.Contains(res2.Rows[0].Note, "5400") || !strings.Contains(res2.Rows[0].Note, "5.4") {
+		t.Fatalf("expected conversion trace note on V_ml, got %q", res2.Rows[0].Note)
+	}
+
+	// 2) Cross-dimension mismatch (mg -> mL) MUST hard-fail instead of silently multiplying 270 * 2!
+	res3 := EvalCalculatorWithActuals(doc, doc.Modules[2].Data, nil)
+	if res3.Err == nil || !strings.Contains(res3.Err.Error(), "量纲不兼容") {
+		t.Fatalf("expected hard dimensional mismatch error for mg -> mL, got res=%+v err=%v", res3, res3.Err)
+	}
+}
+
+func TestV020CrossDimensionDilutionRequiresMWGuard(t *testing.T) {
+	// Case A: Stock is 1 mg/mL (NO MW) and target is 10 uM -> MUST NOT silently divide; MUST flag missing MW!
+	srcNoMW := `---
+asterml: "2.1"
+title: 跨量纲稀释无 MW 测试
+---
+
+## 试剂
+- DrugX 母液 1 mg/mL
+
+## 步骤
+#@ 加药
+- 将 DrugX 稀释至 10 uM，终体积 10 mL
+`
+	docA, err := Parse(srcNoMW)
+	if err != nil {
+		t.Fatal(err)
+	}
+	offA := strings.Index(srcNoMW, "将 DrugX 稀释至")
+	sugsA := AnalyzeLabSentenceWithContext(docA, "- 将 DrugX 稀释至 10 uM，终体积 10 mL", offA, nil)
+	if len(sugsA) != 1 {
+		t.Fatalf("expected 1 suggestion, got %+v", sugsA)
+	}
+	hasMWMissing := false
+	for _, m := range sugsA[0].MissingSlots {
+		if strings.Contains(m, "MW") || strings.Contains(m, "分子量") {
+			hasMWMissing = true
+		}
+	}
+	if !hasMWMissing {
+		t.Fatalf("expected missing MW guard when crossing mg/mL -> uM without MW, got %+v", sugsA[0])
+	}
+
+	// Case B: Stock is 1 mg/mL WITH MW=500 -> 1 mg/mL = 2000 uM -> 2000 uM -> 10 uM in 10 mL => V1 = 50 uL!
+	srcWithMW := `---
+asterml: "2.1"
+title: 跨量纲稀释含 MW 测试
+---
+
+## 试剂
+- DrugX 母液 1 mg/mL (MW=500)
+
+## 步骤
+#@ 加药
+- 将 DrugX 稀释至 10 uM，终体积 10 mL
+`
+	docB, err := Parse(srcWithMW)
+	if err != nil {
+		t.Fatal(err)
+	}
+	offB := strings.Index(srcWithMW, "将 DrugX 稀释至")
+	sugsB := AnalyzeLabSentenceWithContext(docB, "- 将 DrugX 稀释至 10 uM，终体积 10 mL", offB, nil)
+	if len(sugsB) != 1 || !strings.Contains(sugsB[0].Summary, "50 µL") {
+		t.Fatalf("expected MW=500 cross-dimension dilution (1 mg/mL = 2000 uM -> 10 uM, 10 mL => 50 uL), got %+v", sugsB)
+	}
+}
+
+func TestV020UnassignedEmptyPlateRefusesSilentFormatFallback(t *testing.T) {
+	src := `---
+asterml: "2.1"
+title: 未分配空板禁静默回退测试
+---
+
+` + "```asterlab" + `
+id: plate-empty-96
+kind: plate
+schema: 1
+title: 尚未框选分组的 96 孔板
+format: 96
+groups: {}
+` + "```" + `
+
+` + "```asterlab" + `
+id: calc-mm
+kind: calculator
+schema: 1
+title: 预混液计算
+mode: formula
+rows:
+  - key: N
+    label: 有效实验孔
+    kind: input
+    value: "@plate.sample_wells"
+    unit: 孔
+  - key: V_tot
+    label: 总需求体积
+    kind: formula
+    formula: 'N \times 100'
+    unit: uL
+` + "```" + `
+`
+	doc, err := Parse(src)
+	if err != nil {
+		t.Fatal(err)
+	}
+	g := BuildSciGraph(doc)
+	pl := g.PrimaryPlate()
+	if pl == nil || pl.Assigned || pl.SampleWells != 0 {
+		t.Fatalf("expected unassigned empty plate (Assigned=false, SampleWells=0), got %+v", pl)
+	}
+	res := EvalCalculatorWithActuals(doc, doc.Modules[1].Data, nil)
+	if res.Err == nil || !strings.Contains(res.Err.Error(), "尚未分配") {
+		t.Fatalf("expected actionable error for unassigned plate instead of silent 96-well fallback, got res=%+v err=%v", res, res.Err)
+	}
+}
+
+func TestV020RelayoutBlockedWhenPlateHasRecordedData(t *testing.T) {
+	src := `---
+asterml: "2.1"
+title: 已录数据孔板防重排锁测试
+---
+
+` + "```asterlab" + `
+id: gt-rec
+kind: group_table
+schema: 1
+rows:
+  - id: g_ctrl
+    name: Control
+    role: control
+  - id: g_drug
+    name: Drug
+    role: treatment
+` + "```" + `
+
+` + "```asterlab" + `
+id: plate-recorded
+kind: plate
+schema: 1
+title: 已录读数孔板
+format: 12
+groups:
+  g_ctrl: [A1, A2, A3]
+  g_drug: [B1, B2, B3]
+` + "```" + `
+
+` + "```asterlab" + `
+id: dt-readout
+kind: data_table
+schema: 1
+title: OD450 读数
+container_ref: plate-recorded
+columns:
+  - key: well
+    label: 孔位
+    value_kind: text
+  - key: value
+    label: OD450
+    value_kind: number
+rows:
+  - well: A1
+    value: 1.05
+` + "```" + `
+`
+	doc, err := Parse(src)
+	if err != nil {
+		t.Fatal(err)
+	}
+	p := doc.Modules[1].Plate
+	if hasData, reason := PlateHasRecordedData(doc, p); !hasData || !strings.Contains(reason, "数据表") {
+		t.Fatalf("expected PlateHasRecordedData=true due to data_table reading, got (%v, %q)", hasData, reason)
+	}
+	if _, _, _, err := RelayoutExistingPlate(doc, p, LayoutColMajor, false); err == nil || !strings.Contains(err.Error(), "已锁定孔位") {
+		t.Fatalf("expected RelayoutExistingPlate to block silently re-mapping recorded plate, got err=%v", err)
+	}
+}

@@ -861,6 +861,9 @@ stage: in_progress
 		}
 		t.Logf("REAL Alt+Hover NON-OCCLUSION VERIFIED: hovered line Y=%.1f, card footer Y=%.1f (strictly below!)",
 			targetY, insRect.Y)
+		// Dismiss Test 1's card cleanly before starting independent Test 2 on the same app
+		st.Key(0, ui.KeyEscape)
+		st.Frame()
 	})
 
 	// Capture REAL Alt+Hover over partial-parameter sentence + verify zero occlusion + sweep to hard negative + release Alt & click insert!
@@ -887,6 +890,9 @@ stage: in_progress
 		if !okCard || insRect.Y <= line3Y+40 {
 			t.Fatalf("fallback card occluded sentence: line3Y=%.1f cardFooterY=%.1f", line3Y, insRect.Y)
 		}
+		// Dismiss Test 2's card cleanly before Test 3
+		st.Key(0, ui.KeyEscape)
+		st.Frame()
 	})
 
 	// Test 3: Real Alt on line 1 (12-well plate) -> release Alt -> move mouse into card -> click "+ 下方插入组件"!
@@ -906,17 +912,37 @@ stage: in_progress
 		if !st.HasText("12 孔板 + 4 组") {
 			t.Fatalf("expected real Alt+Hover on line 1 to open 12-well plate preview")
 		}
-		// Release Alt and move mouse into card -> card stays open during 260ms grace and stays locked while hovered!
-		insRect, _ := st.Find("下方插入组件")
-		st.CodeUp(0, ui.CodeAltLeft)
-		st.Move(insRect.X+insRect.W/2, insRect.Y+insRect.H/2)
-		st.Frame()
-		st.Advance(400 * time.Millisecond)
-		st.Frame()
-		if !st.HasText("12 孔板 + 4 组") {
-			t.Fatalf("expected card to STAY OPEN after releasing Alt once pointer enters card!")
+		// 1. Hold Alt steadily across 10 shimmer frames -> card must stay rock-solid (zero flicker)
+		for i := 0; i < 10; i++ {
+			st.Advance(60 * time.Millisecond)
+			st.Frame()
+			if !st.HasText("12 孔板 + 4 组") {
+				t.Fatalf("card flickered/closed on frame %d while Alt was still held!", i)
+			}
 		}
-		// Click "+ 下方插入组件" cleanly with real pointer!
+		// 2. Move pointer DOWN onto the card button WHILE STILL HOLDING ALT -> must stay rock-solid past 1500ms!
+		insRect, okBtn := st.Find("下方插入组件")
+		if !okBtn {
+			t.Fatalf("expected 下方插入组件 button in plate preview card")
+		}
+		st.Move(insRect.X+insRect.W/2, insRect.Y+insRect.H/2)
+		for i := 0; i < 12; i++ {
+			st.Advance(130 * time.Millisecond)
+			st.Frame()
+			if !st.HasText("12 孔板 + 4 组") {
+				t.Fatalf("card closed on frame %d while Alt held & pointer moved onto card!", i)
+			}
+		}
+		// 3. Release Alt WHILE pointer remains over the card -> must stay rock-solid well past 900ms grace (1500ms+)!
+		st.CodeUp(0, ui.CodeAltLeft)
+		for i := 0; i < 12; i++ {
+			st.Advance(130 * time.Millisecond)
+			st.Frame()
+			if !st.HasText("12 孔板 + 4 组") {
+				t.Fatalf("card closed on frame %d after releasing Alt while pointer stayed on card!", i)
+			}
+		}
+		// 4. Click "+ 下方插入组件" cleanly with real pointer!
 		if err := st.Click("下方插入组件"); err != nil {
 			t.Fatalf("real Alt+Hover click 下方插入组件 failed: %v", err)
 		}

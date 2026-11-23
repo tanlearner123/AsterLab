@@ -63,9 +63,16 @@ models/nl-router/
 
 ---
 
-## 4. 新增组件的两种路径
+## 4. 新增组件的两种路径与能力边界
 
-| 场景 | 操作方式 | 是否需要重训 |
+> [!IMPORTANT]
+> **准确理解「Zero-Shot」的工程边界**：Zero-Shot 即插即用指的是**语义路由层**（在 `spec/nl_schemas.json` 中描述新组件后，Go 启动自动编码新向量，无需重训 ONNX 模型即可识别用户意图）。而将自然语言槽位转为结构化 `.asterml` YAML 并执行物理量纲校验，仍由确定性 Go 展开器（`nl_suggest.go` / `plate_layout.go`）承担，以保证科学计算 100% 确定可复现。
+
+| 场景 | 操作方式 | 是否需要重训模型 |
 |---|---|---|
-| **快速上线新组件（Zero-Shot）** | 在 `spec/nl_schemas.json` 添加新条目（按 `docs/sdk/nl-extraction-schema.md` 4 条铁律写清 `when_to_suggest` / `when_not_to_suggest` 与 5 个原子槽位）+ Go 展开器 | **否**（启动时 Go 自动编码新描述向量） |
-| **高精校准 / 扩展多语言或新任务** | 补充 50–100 条正/负样本过教师蒸馏，重跑 `export_bundle.py` 产出新版模型包（如 `v1.2.0`）并更新 `task_prefixes` | 是（RTX 5060 约 1 分钟，零改 Go 代码） |
+| **新增组件（Zero-Shot 路由 + Go 展开器）** | 在 `spec/nl_schemas.json` 添加新条目（按 `docs/sdk/nl-extraction-schema.md` 4 条铁律写清 `when_to_suggest` / `when_not_to_suggest` 与 5 个原子槽位）+ 在 Go 中实现对应确定性参数提取与展开逻辑 | **否**（启动时 Go 自动编码新描述向量） |
+| **高精校准 / 扩展多语言或新任务** | 补充 50–100 条正/负样本过教师蒸馏，重跑 `export_bundle.py` 产出新版模型包（如 `v1.3.0`）并更新 `task_prefixes` | 是（RTX 5060 约 1 分钟，零改 Go 代码） |
+
+## 5. Windows 安装包集成
+
+运行 `scripts/mygo-build.ps1 -Version <ver> -IncludeNLModel` 时，脚本自动校验 `manifest.json` 的 `onnx_sha256` 并将 `models/nl-router/` 与 `onnxruntime.dll` 打包进 `dist/`；随后运行 `makensis scripts/mygo-installer.nsi` 会自动启用可选组件页（`Offline AI Semantic Router (~23 MB)`），详细交付与升级机制见 [`docs/handbook/install-and-update.md`](../handbook/install-and-update.md)。

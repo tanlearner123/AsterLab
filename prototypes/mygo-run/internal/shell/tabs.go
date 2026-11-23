@@ -2,6 +2,7 @@ package shell
 
 import (
 	"fmt"
+	"strconv"
 	"strings"
 )
 
@@ -200,6 +201,7 @@ func (s *Shell) EnsureTabs() {
 		}
 		s.ActivePaneID = defaultPaneID
 	}
+	s.sanitizePaneTree()
 	if s.findPane(s.ActivePaneID) == nil {
 		if first := s.firstLeaf(s.RootPane); first != nil {
 			s.ActivePaneID = first.ID
@@ -224,14 +226,261 @@ func (s *Shell) EnsureTabs() {
 	}
 }
 
+// DefaultFileOpenMode returns the user's configured default mode for newly opened `.asterml` tabs.
+func (s *Shell) DefaultFileOpenMode() ViewMode {
+	if s != nil && s.DefaultOpenMode == "read" {
+		return ModeRead
+	}
+	return ModeEdit
+}
+
+func parseTrailingSeq(id string) uint64 {
+	idx := strings.LastIndexByte(id, '-')
+	if idx < 0 || idx+1 >= len(id) {
+		return 0
+	}
+	n, err := strconv.ParseUint(id[idx+1:], 10, 64)
+	if err != nil {
+		return 0
+	}
+	return n
+}
+
+func findAnyPaneNodeRec(n *PaneNode, id string) *PaneNode {
+	if n == nil {
+		return nil
+	}
+	if n.ID == id {
+		return n
+	}
+	if l := findAnyPaneNodeRec(n.First, id); l != nil {
+		return l
+	}
+	return findAnyPaneNodeRec(n.Second, id)
+}
+
 func (s *Shell) nextPaneID() string {
-	s.paneSeq++
-	return fmt.Sprintf("pane-%d", s.paneSeq)
+	for {
+		s.paneSeq++
+		id := fmt.Sprintf("pane-%d", s.paneSeq)
+		if findAnyPaneNodeRec(s.RootPane, id) == nil {
+			return id
+		}
+	}
 }
 
 func (s *Shell) nextTabID(prefix string) string {
-	s.tabSeq++
-	return fmt.Sprintf("%s-%d", prefix, s.tabSeq)
+	if prefix == "" {
+		prefix = "tab"
+	}
+	for {
+		s.tabSeq++
+		id := fmt.Sprintf("%s-%d", prefix, s.tabSeq)
+		if s.findTabInTree(id) == nil {
+			return id
+		}
+	}
+}
+
+// sanitizePaneTree enforces strict global uniqueness of all pane IDs and tab IDs across
+// RootPane, advances paneSeq/tabSeq past any restored numeric suffixes, deduplicates
+// singleton tabs (calendar/pantry), and repairs dangling ActiveTabID references.
+// Returns true if any structural corruption or duplicate ID was repaired.
+func (s *Shell) sanitizePaneTree() bool {
+	if s == nil || s.RootPane == nil {
+		return false
+	}
+	repaired := false
+
+	// Pass 1: advance sequence counters past every existing numeric suffix in the tree.
+	var scanSeq func(n *PaneNode)
+	scanSeq = func(n *PaneNode) {
+		if n == nil {
+			return
+		}
+		if seq := parseTrailingSeq(n.ID); seq > s.paneSeq {
+			s.paneSeq = seq
+		}
+		if n.isLeaf() {
+			for _, t := range n.Tabs {
+				if seq := parseTrailingSeq(t.ID); seq > s.tabSeq {
+					s.tabSeq = seq
+				}
+			}
+			return
+		}
+		scanSeq(n.First)
+		scanSeq(n.Second)
+	}
+	scanSeq(s.RootPane)
+
+	// Pass 2: deduplicate pane IDs, tab IDs, and singleton calendar/pantry tabs.
+	seenPanes := map[string]bool{}
+	seenTabs := map[string]bool{}
+	seenCalendar := false
+	seenPantry := false
+
+	var visit func(n *PaneNode)
+	visit = func(n *PaneNode) {
+		if n == nil {
+			return
+		}
+		if strings.TrimSpace(n.ID) == "" || seenPanes[n.ID] {
+			oldID := n.ID
+			for {
+				s.paneSeq++
+				cand := fmt.Sprintf("pane-%d", s.paneSeq)
+				if !seenPanes[cand] {
+					n.ID = cand
+					break
+				}
+			}
+			if s.ActivePaneID == oldID && oldID != "" && !seenPanes[oldID] {
+				s.ActivePaneID = n.ID
+			}
+			repaired = true
+		}
+		seenPanes[n.ID] = true
+
+		if n.isLeaf() {
+			cleaned := make([]WorkspaceTab, 0, len(n.Tabs))
+			activeValid := false
+			for _, tab := range n.Tabs {
+				if tab.Kind == TabCalendar {
+					if seenCalendar {
+						repaired = true
+						continue
+					}
+					seenCalendar = true
+					if tab.ID != calendarTabID {
+						tab.ID = calendarTabID
+						repaired = true
+					}
+					tab.Pinned = true
+				} else if tab.Kind == TabPantry {
+					if seenPantry {
+						repaired = true
+						continue
+					}
+					seenPantry = true
+					if tab.ID != pantryTabID {
+						tab.ID = pantryTabID
+						repaired = true
+					}
+				} else {
+					if strings.TrimSpace(tab.ID) == "" || seenTabs[tab.ID] {
+						wasActive := n.ActiveTabID == tab.ID && !activeValid
+						for {
+							s.tabSeq++
+							cand := fmt.Sprintf("file-%d", s.tabSeq)
+							if !seenTabs[cand] {
+								tab.ID = cand
+								break
+							}
+						}
+						if wasActive {
+							n.ActiveTabID = tab.ID
+						}
+						repaired = true
+					}
+				}
+				seenTabs[tab.ID] = true
+				if tab.ID == n.ActiveTabID {
+					activeValid = true
+				}
+				cleaned = append(cleaned, tab)
+			}
+			n.Tabs = cleaned
+			if !activeValid && len(n.Tabs) > 0 {
+				n.ActiveTabID = n.Tabs[0].ID
+				repaired = true
+			}
+			return
+		}
+		visit(n.First)
+		visit(n.Second)
+	}
+	visit(s.RootPane)
+	return repaired
+}
+
+// ResetWorkspaceForVault clears all open tabs, split panes, navigation history, and
+// document-scoped companion state when switching to a different Vault.
+func (s *Shell) ResetWorkspaceForVault() {
+	if s == nil {
+		return
+	}
+	s.RootPane = nil
+	s.ActivePaneID = ""
+	s.Tabs = nil
+	s.ActiveTabID = ""
+	s.History = nil
+	s.HistoryIdx = -1
+	s.SplitOpen = false
+	s.SecondaryTab = nil
+	s.paneSeq = 0
+	s.tabSeq = 0
+	s.Selected = ""
+	s.SelectedTreePath = ""
+	s.CurrentDocRelPath = ""
+	s.OutlineSteps = nil
+	s.CurrentBacklinks = nil
+	s.CurrentDiagnostics = nil
+	s.CurrentSnapshots = nil
+	s.StatusSaveLabel = ""
+	s.StatusMetaLabel = ""
+	s.StatusWarnLabel = ""
+	s.DayPopoverOpen = false
+	s.PaletteOpen = false
+	s.GlobalSearchOpen = false
+	s.Error = ""
+	s.EnsureTabs()
+}
+
+// PruneMissingFileTabs removes any TabFile referencing a file that does not exist in
+// the active Vault, collapsing empty split panes and guaranteeing a valid active tab.
+// Returns true if any stale tab was pruned.
+func (s *Shell) PruneMissingFileTabs(exists func(relPath string) bool) bool {
+	if s == nil || s.RootPane == nil || exists == nil {
+		return false
+	}
+	type stale struct{ paneID, tabID string }
+	var toDrop []stale
+	var visit func(n *PaneNode)
+	visit = func(n *PaneNode) {
+		if n == nil {
+			return
+		}
+		if n.isLeaf() {
+			for _, t := range n.Tabs {
+				if t.Kind == TabFile && (strings.TrimSpace(t.FilePath) == "" || !exists(t.FilePath)) {
+					toDrop = append(toDrop, stale{paneID: n.ID, tabID: t.ID})
+				}
+			}
+			return
+		}
+		visit(n.First)
+		visit(n.Second)
+	}
+	visit(s.RootPane)
+	if len(toDrop) == 0 {
+		return false
+	}
+	for _, st := range toDrop {
+		pane := s.findPane(st.paneID)
+		if pane == nil {
+			continue
+		}
+		for i := range pane.Tabs {
+			if pane.Tabs[i].ID == st.tabID {
+				pane.Tabs[i].Pinned = false
+				break
+			}
+		}
+		s.CloseTabInPane(st.paneID, st.tabID)
+	}
+	s.EnsureTabs()
+	return true
 }
 
 func (s *Shell) firstLeaf(n *PaneNode) *PaneNode {
@@ -568,10 +817,42 @@ func (s *Shell) SplitPaneWithTab(targetPaneID string, tabCopy WorkspaceTab, dire
 	if target == nil {
 		return
 	}
-	if tabCopy.ID == "" || s.findTabInTree(tabCopy.ID) != nil {
-		tabCopy.ID = s.nextTabID("split")
+	// Calendar and Pantry are singleton surfaces: splitting them moves the existing
+	// tab into the new split pane instead of creating duplicate Calendar/Pantry tabs.
+	if tabCopy.Kind == TabCalendar || tabCopy.Kind == TabPantry {
+		singletonID := calendarTabID
+		if tabCopy.Kind == TabPantry {
+			singletonID = pantryTabID
+		}
+		if src := findPaneWithTab(s.RootPane, singletonID); src != nil {
+			if src.ID == target.ID && len(src.Tabs) <= 1 {
+				return
+			}
+			s.MoveOrSplitTab(src.ID, singletonID, target.ID, direction)
+			return
+		}
+		tabCopy.ID = singletonID
 	}
-	tabCopy.Pinned = false
+	s.splitPaneNode(target, tabCopy, direction, false)
+}
+
+func (s *Shell) splitPaneNode(target *PaneNode, tabCopy WorkspaceTab, direction string, preservePin bool) {
+	if target == nil {
+		return
+	}
+	if tabCopy.Kind == TabCalendar {
+		tabCopy.ID = calendarTabID
+		tabCopy.Pinned = true
+	} else if tabCopy.Kind == TabPantry {
+		tabCopy.ID = pantryTabID
+	} else {
+		if tabCopy.ID == "" || s.findTabInTree(tabCopy.ID) != nil {
+			tabCopy.ID = s.nextTabID("split")
+		}
+		if !preservePin {
+			tabCopy.Pinned = false
+		}
+	}
 	newLeaf := &PaneNode{
 		ID:          s.nextPaneID(),
 		Ratio:       50,
@@ -645,11 +926,20 @@ func (s *Shell) MoveOrSplitTab(srcPaneID, tabID, dstPaneID, zone string) {
 		dstPane.Tabs = append(dstPane.Tabs, moving)
 		dstPane.ActiveTabID = moving.ID
 		s.ActivePaneID = dstPane.ID
-	} else {
-		s.SplitPaneWithTab(dstPane.ID, moving, zone)
+		if len(srcPane.Tabs) == 0 {
+			s.collapseEmptyPane(srcPane.ID)
+		}
+		s.notifyTabChange(moving)
+		return
 	}
+	s.splitPaneNode(dstPane, moving, zone, true)
 	if len(srcPane.Tabs) == 0 {
 		s.collapseEmptyPane(srcPane.ID)
+	}
+	if s.findPane(s.ActivePaneID) == nil {
+		if first := s.firstLeaf(s.RootPane); first != nil {
+			s.ActivePaneID = first.ID
+		}
 	}
 	s.notifyTabChange(moving)
 }
@@ -677,6 +967,10 @@ func (s *Shell) ReorderTabInPane(paneID, tabID string, targetIdx int) {
 	reordered = append(reordered, item)
 	reordered = append(reordered, without[targetIdx:]...)
 	pane.Tabs = reordered
+	if t := s.ActiveTab(); t != nil {
+		s.notifyTabChange(*t)
+		return
+	}
 	s.syncLegacyMirror()
 }
 
@@ -729,6 +1023,10 @@ func (s *Shell) CloseTabInPane(paneID, tabID string) {
 		pane.ActiveTabID = pane.Tabs[nextIdx].ID
 		s.ActivePaneID = pane.ID
 		s.notifyTabChange(pane.Tabs[nextIdx])
+		return
+	}
+	if t := s.ActiveTab(); t != nil {
+		s.notifyTabChange(*t)
 		return
 	}
 	s.syncLegacyMirror()
@@ -791,6 +1089,10 @@ func (s *Shell) CloseTabsToRight(paneID, tabID string) {
 	if !hasActive && len(pane.Tabs) > 0 {
 		pane.ActiveTabID = tabID
 	}
+	if t := s.ActiveTab(); t != nil {
+		s.notifyTabChange(*t)
+		return
+	}
 	s.syncLegacyMirror()
 }
 
@@ -803,7 +1105,7 @@ func (s *Shell) TogglePinTab(paneID, tabID string) {
 	for i := range pane.Tabs {
 		if pane.Tabs[i].ID == tabID {
 			pane.Tabs[i].Pinned = !pane.Tabs[i].Pinned
-			s.syncLegacyMirror()
+			s.notifyTabChange(pane.Tabs[i])
 			return
 		}
 	}
@@ -963,10 +1265,10 @@ func (s *Shell) ToggleRightDrawer() {
 	}
 }
 
-// SetRightDrawer opens the Right Companion Drawer on a specific tab (0 = 大纲, 1 = 速算与计时).
+// SetRightDrawer opens the Right Companion Drawer on a specific tab (0 = 大纲, 1 = 速算与计时, 2 = 关联与诊断).
 func (s *Shell) SetRightDrawer(open bool, toolTab int) {
 	s.RightOpen = open
-	if toolTab >= 0 && toolTab <= 1 {
+	if toolTab >= 0 && toolTab <= 2 {
 		s.RightTab = toolTab
 	}
 	if s.window != nil {
@@ -990,20 +1292,24 @@ func (s *Shell) ExportPersistState() WorkspacePersistState {
 	}
 }
 
-// RestorePersistState restores a saved `.asterlab/workspace.json` safely.
-func (s *Shell) RestorePersistState(st WorkspacePersistState) {
+// RestorePersistState restores a saved `.asterlab/workspace.json` safely,
+// repairing any duplicate tab/pane IDs and advancing sequence counters.
+// Returns true if any corrupt or duplicate IDs were repaired.
+func (s *Shell) RestorePersistState(st WorkspacePersistState) bool {
 	if st.RootPane != nil {
 		s.RootPane = st.RootPane
 		s.ActivePaneID = st.ActivePaneID
 	}
 	s.RightOpen = st.RightOpen
-	if st.RightTab >= 0 && st.RightTab <= 1 {
+	if st.RightTab >= 0 && st.RightTab <= 2 {
 		s.RightTab = st.RightTab
 	}
 	if st.CalendarMode == 0 || st.CalendarMode == 1 {
 		s.CalendarMode = st.CalendarMode
 	}
+	repaired := s.sanitizePaneTree()
 	s.EnsureTabs()
+	return repaired
 }
 
 func firstNonEmptyStr(vals ...string) string {

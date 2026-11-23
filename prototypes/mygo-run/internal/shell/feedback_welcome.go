@@ -135,6 +135,7 @@ func (s *Shell) renderWelcomeDialog(c *ui.Context) {
 	}
 	tok := theme.GetTokens(c.Theme())
 	open := s.WelcomeOpen
+	choiceHandled := false
 	ui.Box(c.Key("welcome-dlg")).Children(func() {
 		components.Dialog(c, &open, components.DialogOptions{Label: "欢迎使用 AsterLab"}, func(panel ui.Element) {
 			panel.Width(float32(tok.Spacing48)*12).Padding(float32(tok.Spacing24)).Gap(float32(tok.Spacing16))
@@ -148,19 +149,19 @@ func (s *Shell) renderWelcomeDialog(c *ui.Context) {
 					ui.Image(c, theme.LogoParsedTriStream(tok.Dark)).Width(float32(tok.Spacing48)).Height(float32(tok.Spacing48)*0.85)
 					ui.Column(c).Grow(1).MinWidth(0).Gap(float32(tok.Spacing4)).Children(func() {
 						ui.Text(c, "欢迎使用 AsterLab").FontSize(float32(tok.TextPage)).Bold().TextColor(tok.Text)
-						ui.Text(c, "本地单真源 .asterml 实验工作台 · 数据完全保存在您自己的电脑目录").
+						ui.Text(c, "本地科研实验工作台 · 所有实验档案与照片安全保存在你自己的电脑中").
 							FontSize(float32(tok.TextData)).TextColor(tok.TextMuted)
 					})
 				})
 
 				ui.Column(c).FillWidth().Padding(float32(tok.Spacing12)).Radius(float32(tok.ControlRadius)).
 					Background(tok.Elevated).Gap(float32(tok.Spacing4)).Children(func() {
-					ui.Text(c, "3 步快速理解工作方式：").FontSize(float32(tok.TextData)).Bold().TextColor(tok.Text)
-					ui.Text(c, "1. 实验库（Vault）：左侧树展示所有 .asterml 实验文档，每份实验都是独立的明文科研档案。").
+					ui.Text(c, "3 步快速上手（无需懂任何代码语法）：").FontSize(float32(tok.TextData)).Bold().TextColor(tok.Text)
+					ui.Text(c, "1. 写方案：左侧管理实验档案与模板，画布像普通文档一样打字，点 + 或右键即可插入分组、孔板、计算器和计时器。").
 						FontSize(float32(tok.TextMeta)).TextColor(tok.TextMuted)
-					ui.Text(c, "2. 实验结构：上方设定目的与分组，下方每个「步骤」内自由组合文本、参数表、孔板、计时器与计算器。").
+					ui.Text(c, "2. 文字变工具：写完稀释或孵育句子后，点行尾 ✦（或按住 Alt 悬停）即可一键转为交互组件。").
 						FontSize(float32(tok.TextMeta)).TextColor(tok.TextMuted)
-					ui.Text(c, "3. 储藏室与工具：随时登记试剂批号/冻存盒位置，右下角可随时检测更新与导出诊断反馈。").
+					ui.Text(c, "3. 台面执行：走进实验室点右上角「实验」开启防误触，直接计时、勾待办、从 Excel 粘贴读数并自动汇总。").
 						FontSize(float32(tok.TextMeta)).TextColor(tok.TextMuted)
 				})
 
@@ -187,22 +188,33 @@ func (s *Shell) renderWelcomeDialog(c *ui.Context) {
 							if primary {
 								btnStyle = components.ButtonPrimary
 							}
-							if components.Button(c, "选择", btnStyle).Clicked() {
+							if components.Button(c, "开始", btnStyle).Clicked() {
 								open = false
+								choiceHandled = true
 								if s.OnOnboardingChoice != nil {
 									s.OnOnboardingChoice(choice)
 								}
 							}
 						})
 					}
-					card("new", "新建空白实验（推荐）", "打开极简双步骤空白画布，点击虚线框即可自由添加文本、表格、孔板与计时器。", "快速开始", true, "new")
-					card("demo", "体验「CCK-8 细胞活力示范实验库」", "一键生成含分组、步骤卡片、96孔板与读数统计的示范实验，直观感受完整用法。", "", false, "demo")
-					card("existing", "打开本地已有实验库目录", fmt.Sprintf("当前默认路径：%s", firstNonEmptyStr(s.VaultPathInput, "默认实验库目录")), "", false, "existing")
+					card("guide", "打开「新手入门指南」互动文档（推荐）", "边看边动手：内含可试玩的 12 孔板、配液计算器、计时器、快捷键与全部右键功能速查。", "5 分钟上手", true, "guide")
+					card("new", "新建空白实验文档", "打开干净白纸，直接输入笔记，随时点击 + 插入步骤、孔板、计算器与数据表。", "", false, "new")
+					card("demo", "体验「CCK-8 细胞活力」完整示范实验", "一键生成含分组、96 孔板、显色计时器与 OD450 汇总统计的真实示范实验。", "", false, "demo")
+					card("existing", "打开电脑已有实验库文件夹", fmt.Sprintf("当前目录：%s", firstNonEmptyStr(s.VaultPathInput, "默认实验库目录")), "", false, "existing")
 				})
 
-				ui.Row(c).FillWidth().Justify(ui.End).Children(func() {
-					if components.Button(c, "稍后探索（跳过引导）", components.ButtonGhost).Clicked() {
+				ui.Row(c).FillWidth().AlignItems(ui.Center).Gap(float32(tok.Spacing8)).Children(func() {
+					if components.Button(c, "1 分钟界面区域导览", components.ButtonOutline).Clicked() {
 						open = false
+						choiceHandled = true
+						if s.OnOnboardingChoice != nil {
+							s.OnOnboardingChoice("tour")
+						}
+					}
+					ui.Spacer(c)
+					if components.Button(c, "稍后探索", components.ButtonGhost).Clicked() {
+						open = false
+						choiceHandled = true
 						if s.OnOnboardingChoice != nil {
 							s.OnOnboardingChoice("skip")
 						}
@@ -211,7 +223,7 @@ func (s *Shell) renderWelcomeDialog(c *ui.Context) {
 			})
 		})
 	})
-	if !open && s.WelcomeOpen && s.OnOnboardingChoice != nil {
+	if !open && !choiceHandled && s.WelcomeOpen && s.OnOnboardingChoice != nil {
 		s.OnOnboardingChoice("skip")
 	}
 	s.WelcomeOpen = open

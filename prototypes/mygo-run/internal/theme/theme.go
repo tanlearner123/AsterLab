@@ -32,11 +32,12 @@ const (
 )
 
 var (
-	themeCfgMu         sync.RWMutex
-	activePreset       = PresetObsidian
-	activeLiquidGlass  = true
-	activeTextScale    float32
-	activeReduceMotion bool
+	themeCfgMu            sync.RWMutex
+	activePreset          = PresetObsidian
+	activeLiquidGlass     = true
+	activeTextScale       float32
+	activeSystemTextScale float32 = 1.0
+	activeReduceMotion    bool
 )
 
 // SetActiveLook configures the active surface preset ("obsidian" | "zinc" | "warm")
@@ -68,6 +69,45 @@ func AccessibilityPrefs() (textScale float32, reduceMotion bool) {
 	s, rm := activeTextScale, activeReduceMotion
 	themeCfgMu.RUnlock()
 	return s, rm
+}
+
+// SetSystemTextScale records the OS accessibility text scale reported by MyGo
+// (e.g. Windows "Make text bigger" slider) so GetTokens/TokensFor stay in lockstep
+// with Onevra components without double-scaling.
+func SetSystemTextScale(scale float32) {
+	if scale <= 0 {
+		scale = 1.0
+	}
+	if scale < 0.80 {
+		scale = 0.80
+	} else if scale > 2.0 {
+		scale = 2.0
+	}
+	themeCfgMu.Lock()
+	activeSystemTextScale = scale
+	themeCfgMu.Unlock()
+}
+
+// EffectiveScale returns the single unified UI scale factor applied consistently
+// across typography, icons, control heights, and Onevra theme metrics.
+func EffectiveScale() float32 {
+	themeCfgMu.RLock()
+	userScale := activeTextScale
+	sysScale := activeSystemTextScale
+	themeCfgMu.RUnlock()
+	if userScale > 0 {
+		if userScale < 0.85 {
+			return 0.85
+		}
+		if userScale > 1.50 {
+			return 1.50
+		}
+		return userScale
+	}
+	if sysScale > 0 {
+		return sysScale
+	}
+	return 1.0
 }
 
 // ActiveLook returns the currently active theme preset and Liquid Glass toggle.
@@ -105,45 +145,50 @@ type Tokens struct {
 	AccentSoftBg, InfoBg, InfoText, CodeBg                                                       ui.Color
 	Spacing4, Spacing8, Spacing12, Spacing16, Spacing24, Spacing32, Spacing48                    int
 	TextPage, TextSection, TextBody, TextMeta, TextData                                          int
+	IconSm, IconMd, IconLg                                                                       int
 	ButtonHeight, InputHeight, RowHeight                                                         int
 	ControlRadius, PanelRadius, DialogRadius                                                     int
 }
 
-func scaleTextToken(base int, scale float32) int {
+func scaleToken(base int, scale float32, minVal int) int {
 	if scale <= 0 || scale == 1 {
 		return base
 	}
 	v := int(float32(base)*scale + 0.5)
-	if v < 9 {
-		v = 9
+	if v < minVal {
+		v = minVal
 	}
 	return v
 }
 
 // TokensFor returns the full design token set for an explicit preset, dark flag,
-// and Liquid Glass toggle.
+// and Liquid Glass toggle. Typography, icons, and control heights scale together
+// from EffectiveScale() so fonts and icons always stay proportional across monitors.
 func TokensFor(preset string, dark, liquidGlass bool) Tokens {
 	p := normalizePreset(preset)
-	scale, _ := AccessibilityPrefs()
+	scale := EffectiveScale()
 	t := Tokens{
 		Preset:        p,
 		LiquidGlass:   liquidGlass,
 		Dark:          dark,
 		Spacing4:      4,
 		Spacing8:      8,
-		Spacing12:     12,
-		Spacing16:     16,
-		Spacing24:     24,
-		Spacing32:     32,
-		Spacing48:     48,
-		TextPage:      scaleTextToken(22, scale),
-		TextSection:   scaleTextToken(16, scale),
-		TextBody:      scaleTextToken(14, scale),
-		TextMeta:      scaleTextToken(12, scale),
-		TextData:      scaleTextToken(13, scale),
-		ButtonHeight:  30,
-		InputHeight:   30,
-		RowHeight:     32,
+		Spacing12:     scaleToken(12, scale, 10),
+		Spacing16:     scaleToken(16, scale, 14),
+		Spacing24:     scaleToken(24, scale, 20),
+		Spacing32:     scaleToken(32, scale, 28),
+		Spacing48:     scaleToken(48, scale, 42),
+		TextPage:      scaleToken(26, scale, 20),
+		TextSection:   scaleToken(18, scale, 15),
+		TextBody:      scaleToken(15, scale, 13),
+		TextData:      scaleToken(14, scale, 12),
+		TextMeta:      scaleToken(13, scale, 11),
+		IconSm:        scaleToken(15, scale, 13),
+		IconMd:        scaleToken(17, scale, 15),
+		IconLg:        scaleToken(20, scale, 18),
+		ButtonHeight:  scaleToken(32, scale, 28),
+		InputHeight:   scaleToken(32, scale, 28),
+		RowHeight:     scaleToken(34, scale, 30),
 		ControlRadius: 6,
 		PanelRadius:   12,
 		DialogRadius:  14,
@@ -355,24 +400,20 @@ func PaletteFor(preset string, dark, liquidGlass bool) *ui.Theme {
 }
 
 // Window is the theme function Onevra's shells and Apply take: it follows the
-// desktop's appearance, text scale and higher-contrast preference.
+// desktop's appearance, OS text scale, in-app zoom, and higher-contrast preference
+// with a single unified scale factor (zero double-scaling).
 func Window(c *ui.Context) *ui.Theme {
-	t := Palette(c.Theme().Dark)
 	p := c.Preferences()
+	if p.TextScale > 0 {
+		SetSystemTextScale(p.TextScale)
+	} else {
+		SetSystemTextScale(1.0)
+	}
+	t := Palette(c.Theme().Dark)
 	if p.HighContrast {
 		t.Border = t.Border.Mix(t.Text, 0.45)
 		t.TextMuted = t.TextMuted.Mix(t.Text, 0.4)
 		t.Scrollbar = t.Scrollbar.Alpha(1.6)
-	}
-	scale := float32(1)
-	if userScale, _ := AccessibilityPrefs(); userScale > 0 && userScale != 1 {
-		scale = userScale
-	} else if s := p.TextScale; s > 0 && s != 1 {
-		scale = s
-	}
-	if scale != 1 {
-		t.FontSize *= scale
-		t.Spacing = max(3.5, min(5.5, 4.0*scale))
 	}
 	return t
 }
@@ -486,7 +527,7 @@ func applyTokens(c Tokens) *ui.Theme {
 	t.Radius = float32(c.ControlRadius)
 	if c.TextBody > 0 {
 		t.FontSize = float32(c.TextBody)
-		t.Spacing = max(3.5, min(5.5, 4.0*float32(c.TextBody)/14.0))
+		t.Spacing = max(3.5, min(6.0, 4.0*EffectiveScale()))
 	} else {
 		t.Spacing = 4
 	}

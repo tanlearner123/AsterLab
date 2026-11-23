@@ -199,7 +199,32 @@ func (v *View) renderEmbedCard(c *ui.Context, seg DocSegment, resolvedBySpan map
 				ui.Row(c).FillWidth().AlignItems(ui.Center).Gap(float32(tok.Spacing8)).Children(func() {
 					ui.Text(c, filepath.Base(emb.Asset)).FontSize(float32(tok.TextSection)).Bold().TextColor(tok.Text)
 					if emb.HasRelation() {
-						components.Badge(c, FormatRelationAttr(emb), components.BadgeOptions{Tone: components.BadgeAccent})
+						var badgeParts []string
+						for _, tg := range emb.Targets {
+							tLbl := tg.ObjectID
+							if v.Doc != nil {
+								for _, m := range v.Doc.Modules {
+									if m.ID == tg.ObjectID {
+										tLbl = firstNonEmpty(textValue(m.Data, "title"), tg.ObjectID)
+										break
+									}
+								}
+							}
+							if len(tg.SubTargets) > 0 {
+								tLbl += " · " + strings.Join(tg.SubTargets, ", ")
+							}
+							badgeParts = append(badgeParts, tLbl)
+						}
+						if emb.Timepoint != "" {
+							badgeParts = append(badgeParts, emb.Timepoint)
+						}
+						if emb.FOV > 0 {
+							badgeParts = append(badgeParts, fmt.Sprintf("视野 %d", emb.FOV))
+						}
+						if emb.Role != "" {
+							badgeParts = append(badgeParts, relationRoleLabel(emb.Role))
+						}
+						components.Badge(c, strings.Join(badgeParts, " · "), components.BadgeOptions{Tone: components.BadgeAccent})
 					}
 					ui.Spacer(c)
 					if components.Button(c, "关闭", components.ButtonOutline).Clicked() {
@@ -243,7 +268,7 @@ func (v *View) renderRelationEditorPopover(c *ui.Context, tok theme.Tokens, key 
 				for _, m := range flat {
 					if m.Kind == "plate" || m.Kind == "step" {
 						objOptions = append(objOptions, m.ID)
-						objLabels[m.ID] = firstNonEmpty(textValue(m.Data, "title"), m.ID) + " (" + m.ID + ")"
+						objLabels[m.ID] = firstNonEmpty(textValue(m.Data, "title"), m.ID)
 					}
 				}
 				for _, g := range v.Doc.GroupList() {
@@ -301,7 +326,23 @@ func (v *View) renderRelationEditorPopover(c *ui.Context, tok theme.Tokens, key 
 					components.TextBox(c, fovBuf, components.TextBoxOptions{}).Placeholder("视野 FOV（如 1）")
 				})
 				ui.Box(c).Grow(1).MinWidth(0).Children(func() {
-					components.TextBox(c, roleBuf, components.TextBoxOptions{}).Placeholder("角色 obs / raw")
+					roleSel := components.Select(c, roleBuf)
+					StyleSelectQuiet(c, tok, roleSel)
+					roleSel.Trigger.Children(func() {
+						ui.Text(c, firstNonEmpty(relationRoleLabel(*roleBuf), "选择角色")).FontSize(float32(tok.TextMeta)).TextColor(tok.Text)
+					})
+					roleSel.Popup(func(p ui.Element) {
+						for _, opt := range []struct{ key, lbl string }{
+							{"obs", "观察图"},
+							{"raw", "原始数据"},
+							{"ref", "参考图"},
+						} {
+							opt := opt
+							roleSel.Item(opt.key).Children(func() {
+								ui.Text(c, opt.lbl).FontSize(float32(tok.TextMeta)).TextColor(tok.Text)
+							})
+						}
+					})
 				})
 			})
 

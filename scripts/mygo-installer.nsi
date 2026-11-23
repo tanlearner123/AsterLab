@@ -16,6 +16,15 @@ RequestExecutionLevel user
 SetCompressor /SOLID lzma
 SetOverwrite on
 
+!if /FileExists "..\prototypes\mygo-run\dist\models\nl-router\router.int8.onnx"
+  !if /FileExists "..\prototypes\mygo-run\dist\onnxruntime.dll"
+    !define HAS_NL_MODEL 1
+  !endif
+!endif
+
+!ifdef HAS_NL_MODEL
+  !insertmacro MUI_PAGE_COMPONENTS
+!endif
 !insertmacro MUI_PAGE_DIRECTORY
 !insertmacro MUI_PAGE_INSTFILES
 !insertmacro MUI_PAGE_FINISH
@@ -25,7 +34,8 @@ SetOverwrite on
 
 !insertmacro MUI_LANGUAGE "English"
 
-Section "Install"
+Section "!AsterLab Core (Required)" SecCore
+    SectionIn RO
     SetShellVarContext current
     SetOutPath "$INSTDIR"
 
@@ -115,12 +125,41 @@ Section "Install"
     WriteRegStr HKCU "Software\Classes\AsterLab.AstermlFile\shell\open\command" "" "$\"$INSTDIR\mygo-run.exe$\" $\"%1$\""
 SectionEnd
 
+!ifdef HAS_NL_MODEL
+Section "Offline AI Semantic Router (~23 MB)" SecNLModel
+    SetOutPath "$INSTDIR"
+    Delete "$INSTDIR\onnxruntime.dll.old"
+    IfFileExists "$INSTDIR\onnxruntime.dll" 0 skipRenameOrt
+        SetFileAttributes "$INSTDIR\onnxruntime.dll" NORMAL
+        Rename "$INSTDIR\onnxruntime.dll" "$INSTDIR\onnxruntime.dll.old"
+    skipRenameOrt:
+    File "..\prototypes\mygo-run\dist\onnxruntime.dll"
+    Delete "$INSTDIR\onnxruntime.dll.old"
+
+    SetOutPath "$INSTDIR\models\nl-router"
+    File "..\prototypes\mygo-run\dist\models\nl-router\manifest.json"
+    File "..\prototypes\mygo-run\dist\models\nl-router\router.int8.onnx"
+    File "..\prototypes\mygo-run\dist\models\nl-router\vocab.txt"
+    !if /FileExists "..\prototypes\mygo-run\dist\models\nl-router\schemas.json"
+        File "..\prototypes\mygo-run\dist\models\nl-router\schemas.json"
+    !endif
+SectionEnd
+!endif
+
 Section "Uninstall"
     SetShellVarContext current
     Delete "$INSTDIR\mygo-run.exe"
     Delete "$INSTDIR\asterlab.exe"
     Delete "$INSTDIR\BUILD_INFO.txt"
     Delete "$INSTDIR\asterlab.ico"
+    Delete "$INSTDIR\onnxruntime.dll"
+    Delete "$INSTDIR\onnxruntime.dll.old"
+    Delete "$INSTDIR\models\nl-router\manifest.json"
+    Delete "$INSTDIR\models\nl-router\router.int8.onnx"
+    Delete "$INSTDIR\models\nl-router\vocab.txt"
+    Delete "$INSTDIR\models\nl-router\schemas.json"
+    RMDir "$INSTDIR\models\nl-router"
+    RMDir "$INSTDIR\models"
     Delete "$INSTDIR\AsterLab-MyGo.bat"
     Delete "$INSTDIR\uninstall.exe"
     RMDir "$INSTDIR"

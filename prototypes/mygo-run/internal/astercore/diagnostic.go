@@ -60,7 +60,7 @@ func AssessDocument(doc *asterdoc.Document, knownPantryCodes map[string]bool) As
 	}
 
 	if doc == nil {
-		add("DOC_MISSING", SeverityBlocking, "document", "文档未成功解析，请检查 AsterML 语法。", "切换到源码模式检查 YAML 块闭合。")
+		add("DOC_MISSING", SeverityBlocking, "document", "文档未能正常加载，请检查实验内容格式。", "可从右上角菜单打开高级源码视图排查。")
 		return rep
 	}
 
@@ -71,6 +71,66 @@ func AssessDocument(doc *asterdoc.Document, knownPantryCodes map[string]bool) As
 
 	var hasControlGroup, hasAnyGroup, hasPlate, hasStep bool
 	var plateTotalAssigned int
+	if st := asterdoc.ParseStepTree(doc.Source, doc); st != nil && len(st.Roots) > 0 {
+		hasStep = true
+	}
+	checkGroupTable := func(bid string, bm map[string]any) {
+		hasAnyGroup = true
+		rows, _ := bm["rows"].([]any)
+		for rIdx, rRaw := range rows {
+			rm, _ := rRaw.(map[string]any)
+			if rm == nil {
+				continue
+			}
+			role, _ := rm["role"].(string)
+			if role == "control" || role == "reference" {
+				hasControlGroup = true
+			}
+			indN := numericFromAny(rm["independent_n"])
+			if indN <= 0 {
+				name, _ := rm["name"].(string)
+				add("ARRIVE_MISSING_N", SeverityNeedsConfirmation,
+					fmt.Sprintf("%s.rows[%d]", bid, rIdx),
+					fmt.Sprintf("分组「%s」未填写独立样本数 n（技术复孔数不能替代独立 n）。", firstNonEmpty(name, "未命名组")),
+					"在分组表中补充独立样本数 n。")
+			}
+		}
+	}
+	checkCalcStock := func(bid string, bm map[string]any) {
+		var c1, c2 float64
+		hasC1, hasC2 := false, false
+		if stockMap, ok := bm["stock"].(map[string]any); ok {
+			c1 = numericFromAny(stockMap["value"])
+			hasC1 = c1 > 0
+		}
+		if targetMap, ok := bm["target"].(map[string]any); ok {
+			c2 = numericFromAny(targetMap["value"])
+			hasC2 = c2 > 0
+		}
+		if rows, ok := bm["rows"].([]any); ok {
+			for _, rr := range rows {
+				rm, _ := rr.(map[string]any)
+				if rm == nil {
+					continue
+				}
+				k, _ := rm["key"].(string)
+				if k == "c1" || k == "C_1" || k == "stock_concentration" {
+					c1 = numericFromAny(rm["value"])
+					hasC1 = c1 > 0
+				}
+				if k == "c2" || k == "C_2" || k == "target_concentration" {
+					c2 = numericFromAny(rm["value"])
+					hasC2 = c2 > 0
+				}
+			}
+		}
+		if hasC1 && hasC2 && c2 > c1 {
+			add("TARGET_EXCEEDS_STOCK", SeverityBlocking, bid,
+				fmt.Sprintf("计算表目标浓度 (%g) 高于母液浓度 (%g)，物理上无法稀释配制。", c2, c1),
+				"降低目标浓度或更换更高浓度母液。")
+		}
+	}
+
 	for _, m := range doc.Modules {
 		switch m.Kind {
 		case "step":
@@ -85,26 +145,7 @@ func AssessDocument(doc *asterdoc.Document, knownPantryCodes map[string]bool) As
 					bid, _ := bm["id"].(string)
 					switch bk {
 					case "group_table":
-						hasAnyGroup = true
-						rows, _ := bm["rows"].([]any)
-						for rIdx, rRaw := range rows {
-							rm, _ := rRaw.(map[string]any)
-							if rm == nil {
-								continue
-							}
-							role, _ := rm["role"].(string)
-							if role == "control" || role == "reference" {
-								hasControlGroup = true
-							}
-							indN := numericFromAny(rm["independent_n"])
-							if indN <= 0 {
-								name, _ := rm["name"].(string)
-								add("ARRIVE_MISSING_N", SeverityNeedsConfirmation,
-									fmt.Sprintf("%s.rows[%d]", bid, rIdx),
-									fmt.Sprintf("分组「%s」未声明独立实验单位数 n（技术复孔数不能替代独立 n）。", firstNonEmpty(name, "未命名组")),
-									"在分组表中补充 independent_n。")
-							}
-						}
+						checkGroupTable(bid, bm)
 					case "plate":
 						hasPlate = true
 						if grps, ok := bm["groups"].(map[string]any); ok {
@@ -115,48 +156,21 @@ func AssessDocument(doc *asterdoc.Document, knownPantryCodes map[string]bool) As
 							}
 						}
 					case "calculator":
-						var c1, c2 float64
-						hasC1, hasC2 := false, false
-						if stockMap, ok := bm["stock"].(map[string]any); ok {
-							c1 = numericFromAny(stockMap["value"])
-							hasC1 = c1 > 0
-						}
-						if targetMap, ok := bm["target"].(map[string]any); ok {
-							c2 = numericFromAny(targetMap["value"])
-							hasC2 = c2 > 0
-						}
-						if rows, ok := bm["rows"].([]any); ok {
-							for _, rr := range rows {
-								rm, _ := rr.(map[string]any)
-								if rm == nil {
-									continue
-								}
-								k, _ := rm["key"].(string)
-								if k == "c1" || k == "stock_concentration" {
-									c1 = numericFromAny(rm["value"])
-									hasC1 = c1 > 0
-								}
-								if k == "c2" || k == "target_concentration" {
-									c2 = numericFromAny(rm["value"])
-									hasC2 = c2 > 0
-								}
-							}
-						}
-						if hasC1 && hasC2 && c2 > c1 {
-							add("TARGET_EXCEEDS_STOCK", SeverityBlocking, bid,
-								fmt.Sprintf("计算表目标浓度 (%g) 高于母液浓度 (%g)，物理上无法稀释配制。", c2, c1),
-								"降低目标浓度或更换更高浓度母液。")
-						}
+						checkCalcStock(bid, bm)
 					}
 				}
 			}
+		case "group_table":
+			checkGroupTable(m.ID, m.Data)
+		case "calculator":
+			checkCalcStock(m.ID, m.Data)
 		case "group":
 			hasAnyGroup = true
 			if role, _ := m.Data["role"].(string); role == "control" || role == "reference" {
 				hasControlGroup = true
 			}
 			if numericFromAny(m.Data["independent_n"]) <= 0 {
-				add("ARRIVE_MISSING_N", SeverityNeedsConfirmation, m.ID, "该实验分组尚未声明独立实验单位数 n。", "补充 independent_n 字段。")
+				add("ARRIVE_MISSING_N", SeverityNeedsConfirmation, m.ID, "该实验分组尚未填写独立样本数 n。", "在分组中补充独立样本数 n。")
 			}
 		case "plate":
 			hasPlate = true
@@ -175,18 +189,18 @@ func AssessDocument(doc *asterdoc.Document, knownPantryCodes map[string]bool) As
 	}
 
 	if !hasStep {
-		add("NO_STEPS", SeverityNeedsConfirmation, "steps", "实验尚未包含任何操作步骤。", "添加至少一个步骤以描述实验流程。")
+		add("NO_STEPS", SeverityNeedsConfirmation, "steps", "实验尚未包含任何操作步骤。", "点击 + 添加至少一个实验步骤。")
 	}
 	if !hasAnyGroup {
-		add("NO_GROUPS", SeverityNeedsConfirmation, "groups", "实验尚未声明分组与对照关系。", "在步骤中插入「实验分组表」明确对照组与处理组。")
+		add("NO_GROUPS", SeverityNeedsConfirmation, "groups", "实验尚未声明分组与对照关系。", "插入「实验分组表」明确对照组与处理组。")
 	} else if !hasControlGroup {
-		add("NO_CONTROL_GROUP", SeverityNeedsConfirmation, "groups", "当前分组中缺少对照组（control / reference）。", "将空白或溶剂组角色标记为「对照组」。")
+		add("NO_CONTROL_GROUP", SeverityNeedsConfirmation, "groups", "当前分组中缺少对照组。", "将空白或溶剂组角色设为「对照组」。")
 	}
 	if hasPlate && plateTotalAssigned == 0 {
-		add("EMPTY_PLATE", SeverityAdvisory, "plate", "已插入孔板但尚未分配任何孔位。", "框选孔位并填入分组或浓度梯度。")
+		add("EMPTY_PLATE", SeverityAdvisory, "plate", "已插入孔板但尚未分配任何孔位。", "框选孔位并点选分组即可分配。")
 	}
 	if asterdoc.NormalizeDateYMD(fm.ScheduledDate) == "" {
-		add("UNSCHEDULED_DATE", SeverityAdvisory, "frontmatter.date", "实验尚未排期（未填写日期）。", "在属性栏填入 YYYY-MM-DD 或拖拽至日程。")
+		add("UNSCHEDULED_DATE", SeverityAdvisory, "frontmatter.date", "实验尚未排期（未填写日期）。", "在顶部属性栏填写实验日期。")
 	}
 
 	rep.Ready = rep.Blocking == 0 && rep.Confirm == 0

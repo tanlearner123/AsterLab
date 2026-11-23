@@ -12,27 +12,35 @@ import (
 )
 
 // AssaySummary holds deterministic derived statistics extracted from a document's
-// plate layout + data_table observations without ever mutating raw observations.
+// SciGraph unified experimental units + data_table observations without mutating raw data.
 type AssaySummary struct {
-	Kind       string              `json:"kind"` // "cck8" | "qpcr" | "descriptive"
-	Title      string              `json:"title"`
-	Control    string              `json:"control,omitempty"`
-	CCK8       *analysis.CCK8Result `json:"cck8,omitempty"`
-	QPCR       *analysis.QPCRResult `json:"qpcr,omitempty"`
-	Groups     []DescriptiveGroup  `json:"groups,omitempty"`
-	ExcludedN  int                 `json:"excluded_wells,omitempty"`
+	Kind      string               `json:"kind"` // "cck8" | "qpcr" | "descriptive"
+	Title     string               `json:"title"`
+	PlateID   string               `json:"plate_id,omitempty"`
+	Control   string               `json:"control,omitempty"`
+	CCK8      *analysis.CCK8Result `json:"cck8,omitempty"`
+	QPCR      *analysis.QPCRResult `json:"qpcr,omitempty"`
+	Groups    []DescriptiveGroup   `json:"groups,omitempty"`
+	ExcludedN int                  `json:"excluded_wells,omitempty"`
+	BlankN    int                  `json:"blank_wells,omitempty"`
+	BlankMean *float64             `json:"blank_mean,omitempty"`
 }
 
-// DescriptiveGroup is a fallback deterministic group summary (N, Mean, SD).
+// DescriptiveGroup is a deterministic group summary strictly separating technical replicate
+// well observations (N / TechReplicates) from independent biological sample count (BioSamples).
 type DescriptiveGroup struct {
-	Group string  `json:"group"`
-	N     int     `json:"n"`
-	Mean  float64 `json:"mean"`
-	SD    float64 `json:"sd"`
+	Group          string   `json:"group"`
+	N              int      `json:"n"`
+	TechReplicates int      `json:"tech_replicates,omitempty"`
+	BioSamples     int      `json:"bio_samples,omitempty"`
+	Mean           float64  `json:"mean"`
+	SD             float64  `json:"sd"`
+	BlankCorrMean  *float64 `json:"blank_corr_mean,omitempty"`
 }
 
 // AnalyzeDocument extracts numeric observations from `data_table@1` modules, maps
-// them through `plate@1` group/control/excluded_wells metadata, and invokes
+// them through `SciGraph` unified `SciUnit` metadata (multi-plate aware, blank subtraction,
+// excluded_wells omission, technical vs biological replicate clarity), and invokes
 // `analysis.AnalyzeCCK8` or `analysis.AnalyzeQPCR` where applicable.
 func AnalyzeDocument(doc *asterdoc.Document, docID string) []AssaySummary {
 	if doc == nil {
@@ -42,21 +50,17 @@ func AnalyzeDocument(doc *asterdoc.Document, docID string) []AssaySummary {
 		docID = "vault-doc"
 	}
 	prov := analysis.Provenance{BatchID: docID, EventID: "live-projection"}
+	graph := asterdoc.BuildSciGraph(doc)
 
-	groupLabels := asterdoc.PlateGroupLabelMap(doc)
 	controlGroup := ""
 	for _, g := range doc.GroupList() {
-		if g.Role == "control" && controlGroup == "" {
+		if g.Role == "control" && !strings.Contains(strings.ToLower(g.ID), "blank") && !strings.Contains(strings.ToLower(g.ID), "pbs") && controlGroup == "" {
 			controlGroup = firstNonEmpty(g.Name, g.ID)
 		}
 	}
 
-	var firstPlate *asterdoc.Plate
 	var dataTables []map[string]any
 	for _, m := range doc.Modules {
-		if m.Kind == "plate" && m.Plate != nil && firstPlate == nil {
-			firstPlate = m.Plate
-		}
 		if m.Kind == "data_table" {
 			dataTables = append(dataTables, m.Data)
 		}
@@ -67,12 +71,7 @@ func AnalyzeDocument(doc *asterdoc.Document, docID string) []AssaySummary {
 					if bm == nil {
 						continue
 					}
-					bk, _ := bm["kind"].(string)
-					if bk == "plate" && firstPlate == nil {
-						if p, err := parsePlateBlock(bm); err == nil {
-							firstPlate = p
-						}
-					} else if bk == "data_table" {
+					if bk, _ := bm["kind"].(string); bk == "data_table" {
 						dataTables = append(dataTables, bm)
 					}
 				}
@@ -80,48 +79,60 @@ func AnalyzeDocument(doc *asterdoc.Document, docID string) []AssaySummary {
 		}
 	}
 
-	excluded := map[string]bool{}
-	wellToGroup := map[string]string{}
-	if firstPlate != nil {
-		for _, w := range firstPlate.ExcludedWells {
-			excluded[strings.ToUpper(strings.TrimSpace(w))] = true
-		}
-		for w, gid := range firstPlate.WellGroups() {
-			lbl := firstNonEmpty(groupLabels[gid], gid)
-			wellToGroup[strings.ToUpper(w)] = lbl
-			if controlGroup == "" && strings.EqualFold(firstPlate.Roles[w], "negative_control") {
-				controlGroup = lbl
-			}
+	defaultPlateID := ""
+	if graph != nil {
+		if pl := graph.PrimaryPlate(); pl != nil {
+			defaultPlateID = pl.ID
 		}
 	}
 
 	var summaries []AssaySummary
 	for _, dt := range dataTables {
 		title := firstNonEmpty(stringVal(dt["title"]), "数据表统计")
+		plateID := firstNonEmpty(stringVal(dt["container_ref"]), firstNonEmpty(stringVal(dt["plate_id"]), defaultPlateID))
 		rows, _ := dt["rows"].([]any)
 		if len(rows) == 0 {
 			continue
 		}
-		// Extract cells from row entries
+		// Extract cells via unified SciUnit lookup (multi-plate, excluded_wells, blank separation)
 		var cells []analysis.Cell
+		var blankVals []float64
 		excludedCount := 0
 		genes := map[string]bool{}
 		samples := map[string]bool{}
+		bioByGroup := map[string]map[string]bool{}
+
 		for _, rRaw := range rows {
 			rm, _ := rRaw.(map[string]any)
 			if rm == nil {
 				continue
 			}
-			well := strings.ToUpper(strings.TrimSpace(stringVal(rm["well"])))
-			if well != "" && excluded[well] {
-				excludedCount++
+			well := strings.ToUpper(strings.TrimSpace(firstNonEmpty(stringVal(rm["well"]), stringVal(rm["well_id"]))))
+			var unit asterdoc.SciUnit
+			hasUnit := false
+			if well != "" && graph != nil {
+				unit, hasUnit = graph.UnitForWell(plateID, well)
+				if hasUnit && unit.Excluded {
+					excludedCount++
+					continue
+				}
+			}
+			val, hasVal := firstNumericReading(rm)
+			if hasUnit && unit.Blank {
+				if hasVal {
+					blankVals = append(blankVals, val)
+				}
 				continue
 			}
 			grp := strings.TrimSpace(stringVal(rm["group"]))
-			if grp == "" && well != "" {
-				grp = wellToGroup[well]
+			if grp == "" && hasUnit {
+				grp = firstNonEmpty(unit.GroupName, unit.GroupID)
 			}
-			sample := firstNonEmpty(stringVal(rm["sample"]), grp)
+			explicitSample := strings.TrimSpace(firstNonEmpty(stringVal(rm["sample_id"]), stringVal(rm["sample"])))
+			if explicitSample == "" && hasUnit && strings.TrimSpace(unit.SampleID) != "" {
+				explicitSample = strings.TrimSpace(unit.SampleID)
+			}
+			sample := firstNonEmpty(explicitSample, grp)
 			if grp == "" {
 				grp = sample
 			}
@@ -132,7 +143,6 @@ func AnalyzeDocument(doc *asterdoc.Document, docID string) []AssaySummary {
 			if gene == "" {
 				gene = strings.TrimSpace(stringVal(rm["target"]))
 			}
-			val, hasVal := firstNumericReading(rm)
 			if !hasVal {
 				cells = append(cells, analysis.Cell{
 					Group: grp, SampleID: sample, Gene: gene, Status: analysis.Missing,
@@ -143,6 +153,12 @@ func AnalyzeDocument(doc *asterdoc.Document, docID string) []AssaySummary {
 			cells = append(cells, analysis.Cell{
 				Group: grp, SampleID: sample, Gene: gene, Value: &vCopy, Status: analysis.Raw,
 			})
+			if bioByGroup[grp] == nil {
+				bioByGroup[grp] = map[string]bool{}
+			}
+			if explicitSample != "" && explicitSample != well {
+				bioByGroup[grp][explicitSample] = true
+			}
 			if gene != "" {
 				genes[gene] = true
 			}
@@ -152,6 +168,12 @@ func AnalyzeDocument(doc *asterdoc.Document, docID string) []AssaySummary {
 		}
 		if len(cells) == 0 {
 			continue
+		}
+
+		var blankMeanPtr *float64
+		if len(blankVals) > 0 {
+			bm := meanSlice(blankVals)
+			blankMeanPtr = &bm
 		}
 
 		// Try RT-qPCR ΔΔCq if >=2 genes (target + reference) and calibrator exists
@@ -171,30 +193,37 @@ func AnalyzeDocument(doc *asterdoc.Document, docID string) []AssaySummary {
 					summaries = append(summaries, AssaySummary{
 						Kind:      "qpcr",
 						Title:     fmt.Sprintf("%s · ΔΔCq (%s / %s)", title, targetGene, refGene),
+						PlateID:   plateID,
 						Control:   calSample,
 						QPCR:      &qpcrRes,
 						ExcludedN: excludedCount,
+						BlankN:    len(blankVals),
+						BlankMean: blankMeanPtr,
 					})
 					continue
 				}
 			}
 		}
 
-		// Try CCK-8 relative viability if a control group is present
-		if controlGroup != "" {
+		// Only normalize as CCK-8 relative viability when the table/document explicitly indicates a viability assay;
+		// general quantitative tables (ELISA, protein conc, fluorescence intensity, tube counts) stay descriptive!
+		if controlGroup != "" && isViabilityAssayTable(doc, dt, title) {
 			if cckRes, err := analysis.AnalyzeCCK8(cells, controlGroup, prov); err == nil {
 				summaries = append(summaries, AssaySummary{
 					Kind:      "cck8",
 					Title:     fmt.Sprintf("%s · 相对活力分析", title),
+					PlateID:   plateID,
 					Control:   controlGroup,
 					CCK8:      &cckRes,
 					ExcludedN: excludedCount,
+					BlankN:    len(blankVals),
+					BlankMean: blankMeanPtr,
 				})
 				continue
 			}
 		}
 
-		// Descriptive fallback (group N, Mean, SD)
+		// Descriptive fallback (group TechReplicates, BioSamples, Mean, SD, BlankCorrMean)
 		byGroup := map[string][]float64{}
 		for _, c := range cells {
 			if c.Status == analysis.Raw && c.Value != nil {
@@ -205,58 +234,62 @@ func AnalyzeDocument(doc *asterdoc.Document, docID string) []AssaySummary {
 			var desc []DescriptiveGroup
 			for _, gName := range sortedKeysMap(byGroup) {
 				vs := byGroup[gName]
+				mVal := meanSlice(vs)
+				var corrPtr *float64
+				if blankMeanPtr != nil {
+					cv := mVal - *blankMeanPtr
+					corrPtr = &cv
+				}
+				bioN := len(bioByGroup[gName])
 				desc = append(desc, DescriptiveGroup{
-					Group: gName,
-					N:     len(vs),
-					Mean:  meanSlice(vs),
-					SD:    sdSlice(vs),
+					Group:          gName,
+					N:              len(vs),
+					TechReplicates: len(vs),
+					BioSamples:     bioN,
+					Mean:           mVal,
+					SD:             sdSlice(vs),
+					BlankCorrMean:  corrPtr,
 				})
 			}
 			summaries = append(summaries, AssaySummary{
 				Kind:      "descriptive",
 				Title:     title,
+				PlateID:   plateID,
 				Groups:    desc,
 				ExcludedN: excludedCount,
+				BlankN:    len(blankVals),
+				BlankMean: blankMeanPtr,
 			})
 		}
 	}
 	return summaries
 }
 
-func parsePlateBlock(bm map[string]any) (*asterdoc.Plate, error) {
-	p := &asterdoc.Plate{
-		ID:     stringVal(bm["id"]),
-		Format: int(numericFromAny(bm["format"])),
+func isViabilityAssayTable(doc *asterdoc.Document, dt map[string]any, title string) bool {
+	var sb strings.Builder
+	sb.WriteString(strings.ToLower(title))
+	if doc != nil {
+		fm, _, _ := asterdoc.ScanFrontmatter(doc.Source)
+		sb.WriteString(" ")
+		sb.WriteString(strings.ToLower(fm.Title))
 	}
-	if p.Format == 0 {
-		p.Format = 96
-	}
-	if ex, ok := bm["excluded_wells"].([]any); ok {
-		for _, w := range ex {
-			if ws := strings.TrimSpace(stringVal(w)); ws != "" {
-				p.ExcludedWells = append(p.ExcludedWells, ws)
+	if cols, ok := dt["columns"].([]any); ok {
+		for _, cRaw := range cols {
+			if cm, ok := cRaw.(map[string]any); ok {
+				sb.WriteString(" ")
+				sb.WriteString(strings.ToLower(stringVal(cm["key"])))
+				sb.WriteString(" ")
+				sb.WriteString(strings.ToLower(stringVal(cm["label"])))
 			}
 		}
 	}
-	if grps, ok := bm["groups"].(map[string]any); ok {
-		p.Groups = map[string][]string{}
-		for gid, raw := range grps {
-			if arr, ok := raw.([]any); ok {
-				for _, w := range arr {
-					if ws := strings.TrimSpace(stringVal(w)); ws != "" {
-						p.Groups[gid] = append(p.Groups[gid], ws)
-					}
-				}
-			}
+	hay := sb.String()
+	for _, kw := range []string{"cck8", "cck-8", "od450", "od 450", "viability", "mtt", "alamar", "活力", "存活率", "增殖"} {
+		if strings.Contains(hay, kw) {
+			return true
 		}
 	}
-	if roles, ok := bm["roles"].(map[string]any); ok {
-		p.Roles = map[string]string{}
-		for k, v := range roles {
-			p.Roles[k] = stringVal(v)
-		}
-	}
-	return p, nil
+	return false
 }
 
 func firstNumericReading(rm map[string]any) (float64, bool) {

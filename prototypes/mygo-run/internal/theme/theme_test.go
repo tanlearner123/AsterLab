@@ -44,13 +44,25 @@ func TestDesignTokens(t *testing.T) {
 		t.Fatal("painter tokens do not follow the dark palette")
 	}
 
-	if !(light.TextPage >= light.TextSection && light.TextSection > light.TextBody && light.TextBody == 14 && light.TextData == 13 && light.TextMeta >= 12) {
-		t.Fatalf("typography hierarchy mismatch with Onevra 14px base: %+v", light)
+	if !(light.TextPage >= light.TextSection && light.TextSection > light.TextBody && light.TextBody == 15 && light.TextData == 14 && light.TextMeta >= 13) {
+		t.Fatalf("typography hierarchy mismatch with Obsidian-grade desktop 15px base: %+v", light)
+	}
+	if light.IconSm < 14 || light.IconMd < 16 || light.IconLg < 19 {
+		t.Fatalf("icon scale tokens too small for 27-inch desktop readability: %+v", light)
 	}
 	SetAccessibilityPrefs(1.2, false)
-	defer SetAccessibilityPrefs(1.0, false)
+	defer SetAccessibilityPrefs(0, false)
 	scaled := LightTokens()
-	if scaled.TextBody <= light.TextBody || scaled.TextMeta <= light.TextMeta {
-		t.Fatalf("accessibility font scale did not apply cleanly: base=%+v scaled=%+v", light, scaled)
+	if scaled.TextBody <= light.TextBody || scaled.TextMeta <= light.TextMeta || scaled.IconMd <= light.IconMd {
+		t.Fatalf("accessibility font+icon scale did not apply cleanly: base=%+v scaled=%+v", light, scaled)
+	}
+	// Verify OS TextScale is respected when user scale is 0 (follow OS) without double-scaling.
+	SetAccessibilityPrefs(0, false)
+	SetSystemTextScale(1.25)
+	defer SetSystemTextScale(1.0)
+	osScaled := LightTokens()
+	osTheme := LightTheme()
+	if osScaled.TextBody <= light.TextBody || osTheme.FontSize != float32(osScaled.TextBody) {
+		t.Fatalf("OS TextScale must drive both Tokens and Onevra FontSize without double-scaling: tok=%d theme=%.1f", osScaled.TextBody, osTheme.FontSize)
 	}
 }

@@ -50,12 +50,12 @@ func (s *Shell) renderRibbon(c *ui.Context, tok theme.Tokens) {
 	if c.Vibrancy() {
 		ribbonBg = tok.Text.Alpha(0.025)
 	}
-	ui.Column(c).Width(float32(tok.Spacing48)*0.84).FillHeight().
+	ui.Column(c).Width(float32(tok.Spacing48)).FillHeight().
 		Padding(float32(tok.Spacing8), float32(tok.Spacing4)).
 		Gap(float32(tok.Spacing8)).AlignItems(ui.Center).
 		Background(ribbonBg).Children(func() {
 		// AsterLab Brand Mark (optical small variant) -> opens About card
-		brandBtn := components.IconButton(c, theme.LogoParsedSmall(), "关于 AsterLab", components.IconButtonCompact)
+		brandBtn := components.IconButton(c, theme.LogoParsedSmall(), "关于 AsterLab", components.IconButtonPlain)
 		brandBtn.TextColor(tok.Accent)
 		if s.VaultSettingsOpen && s.SettingsView.Category == "about" {
 			brandBtn.Background(tok.AccentSoftBg)
@@ -67,7 +67,7 @@ func (s *Shell) renderRibbon(c *ui.Context, tok theme.Tokens) {
 		ui.Box(c).Width(float32(tok.Spacing24)).Height(1).Background(tok.Border.Alpha(0.7))
 
 		// Toggle file tree (Ctrl+B)
-		treeBtn := components.IconButton(c, lucide.FolderTree(), "切换文件树 (Ctrl+B)", components.IconButtonCompact)
+		treeBtn := components.IconButton(c, lucide.FolderTree(), "切换文件树 (Ctrl+B)", components.IconButtonPlain)
 		if s.window != nil && s.window.LeftExpanded() {
 			treeBtn.Background(tok.AccentSoftBg)
 		}
@@ -76,7 +76,7 @@ func (s *Shell) renderRibbon(c *ui.Context, tok theme.Tokens) {
 		}
 
 		// Calendar Home
-		calBtn := components.IconButton(c, lucide.CalendarDays(), "实验日程 (Ctrl+1)", components.IconButtonCompact)
+		calBtn := components.IconButton(c, lucide.CalendarDays(), "实验日程 (Ctrl+1)", components.IconButtonPlain)
 		if calActive {
 			calBtn.Background(tok.AccentSoftBg)
 		}
@@ -85,7 +85,7 @@ func (s *Shell) renderRibbon(c *ui.Context, tok theme.Tokens) {
 		}
 
 		// Storage Pantry
-		pantryBtn := components.IconButton(c, lucide.Package(), "储藏室", components.IconButtonCompact)
+		pantryBtn := components.IconButton(c, lucide.Package(), "储藏室", components.IconButtonPlain)
 		if pantryActive {
 			pantryBtn.Background(tok.AccentSoftBg)
 		}
@@ -94,7 +94,7 @@ func (s *Shell) renderRibbon(c *ui.Context, tok theme.Tokens) {
 		}
 
 		// Quick Search / Switcher (Ctrl+O / Ctrl+K)
-		searchBtn := components.IconButton(c, lucide.Search(), "快速打开与命令 (Ctrl+K)", components.IconButtonCompact)
+		searchBtn := components.IconButton(c, lucide.Search(), "快速打开与命令 (Ctrl+K)", components.IconButtonPlain)
 		if searchBtn.Clicked() {
 			s.PaletteOpen = true
 			s.PaletteCursor = 0
@@ -103,7 +103,7 @@ func (s *Shell) renderRibbon(c *ui.Context, tok theme.Tokens) {
 		ui.Spacer(c)
 
 		// Vault Settings
-		setBtn := components.IconButton(c, lucide.Settings(), "设置 (Ctrl+,)", components.IconButtonCompact)
+		setBtn := components.IconButton(c, lucide.Settings(), "设置 (Ctrl+,)", components.IconButtonPlain)
 		if s.VaultSettingsOpen {
 			setBtn.Background(tok.AccentSoftBg)
 		}
@@ -114,18 +114,18 @@ func (s *Shell) renderRibbon(c *ui.Context, tok theme.Tokens) {
 }
 
 func (s *Shell) renderFileTreePane(c *ui.Context, tok theme.Tokens) {
-	// Compact icon-only header toolbar on Desktop
+	// Clean desktop header toolbar with proportional standard icons
 	ui.Row(c).FillWidth().Padding(float32(tok.Spacing4), float32(tok.Spacing8)).
 		AlignItems(ui.Center).Gap(float32(tok.Spacing4)).Children(func() {
 		components.Text(c, "实验库").FontSize(float32(tok.TextData)).Bold().TextColor(tok.TextMuted).
 			Grow(1).MinWidth(0)
-		if components.IconButton(c, lucide.FilePlus(), "新建实验 (Ctrl+N)", components.IconButtonCompact).Clicked() {
+		if components.IconButton(c, lucide.FilePlus(), "新建实验 (Ctrl+N)", components.IconButtonPlain).Clicked() {
 			s.triggerVaultNewFile("")
 		}
-		if components.IconButton(c, lucide.FolderPlus(), "新建项目文件夹", components.IconButtonCompact).Clicked() {
+		if components.IconButton(c, lucide.FolderPlus(), "新建项目文件夹", components.IconButtonPlain).Clicked() {
 			s.startNewFolderPrompt("")
 		}
-		if components.IconButton(c, lucide.ChevronsDownUp(), "折叠全部文件夹", components.IconButtonCompact).Clicked() {
+		if components.IconButton(c, lucide.ChevronsDownUp(), "折叠全部文件夹", components.IconButtonPlain).Clicked() {
 			for k := range s.folderOpen {
 				s.folderOpen[k] = false
 			}
@@ -192,7 +192,7 @@ func (s *Shell) renderFileTreeScrollBody(c *ui.Context, tok theme.Tokens) {
 
 func renderTreeIndentGuides(c *ui.Context, tok theme.Tokens, depth int) {
 	for d := 0; d < depth; d++ {
-		ui.Row(c).Width(float32(tok.Spacing16)).Height(c.Theme().Space(7)).AlignItems(ui.Center).Children(func() {
+		ui.Row(c).Width(float32(tok.Spacing16)).Height(float32(tok.RowHeight)).AlignItems(ui.Center).Children(func() {
 			ui.Box(c).Width(float32(tok.Spacing8)).Height(1)
 			ui.Box(c).Width(1).FillHeight().Background(tok.Border.Alpha(0.55))
 		})
@@ -228,7 +228,7 @@ func (s *Shell) renderTreeNode(c *ui.Context, tok theme.Tokens, node *vault.Tree
 		}
 
 		row := ui.ButtonBase(c.Key("tree-dir:"+node.RelPath)).Label(node.Name).
-			FillWidth().MinWidth(0).Height(c.Theme().Space(7)).
+			FillWidth().MinWidth(0).Height(float32(tok.RowHeight)).
 			Justify(ui.Start).Radius(float32(tok.ControlRadius)+2).FocusRing(true).
 			Padding(0, float32(tok.Spacing8), 0, float32(tok.Spacing4)).
 			Selected(selected).TextColor(tok.Text)
@@ -248,14 +248,23 @@ func (s *Shell) renderTreeNode(c *ui.Context, tok theme.Tokens, node *vault.Tree
 					chev = lucide.ChevronDown()
 				}
 				ui.Box(c).Size(float32(tok.Spacing16), float32(tok.Spacing16)).Center().Shrink(0).Children(func() {
-					ui.Icon(c, chev).Size(float32(tok.Spacing12), float32(tok.Spacing12)).TextColor(tok.TextMuted)
+					ui.Icon(c, chev).Size(float32(tok.IconSm), float32(tok.IconSm)).TextColor(tok.TextMuted)
 				})
 				icoCol := tok.TextMuted
 				if selected {
 					icoCol = tok.Text
 				}
-				ui.Icon(c, icon).Size(float32(tok.Spacing16)*0.88, float32(tok.Spacing16)*0.88).TextColor(icoCol).ContentTransition(theme.IconMorph())
-				components.Text(c, node.Name).FontSize(float32(tok.TextData)).Bold().TextColor(tok.Text).
+				ui.Icon(c, icon).Size(float32(tok.IconMd), float32(tok.IconMd)).TextColor(icoCol).ContentTransition(theme.IconMorph())
+				dispName := node.Name
+				if node.IsSystem {
+					switch strings.ToLower(node.Name) {
+					case "templates":
+						dispName = "实验模板"
+					case "assets":
+						dispName = "图片与附件"
+					}
+				}
+				components.Text(c, dispName).FontSize(float32(tok.TextData)).Bold().TextColor(tok.Text).
 					SingleLine().Ellipsis("…").Grow(1).MinWidth(0)
 			})
 		})
@@ -350,7 +359,7 @@ func (s *Shell) renderTreeNode(c *ui.Context, tok theme.Tokens, node *vault.Tree
 	}
 
 	row := ui.ButtonBase(c.Key("tree-file:"+node.RelPath)).Label(node.Name).
-		FillWidth().MinWidth(0).Height(c.Theme().Space(7)).
+		FillWidth().MinWidth(0).Height(float32(tok.RowHeight)).
 		Justify(ui.Start).Radius(float32(tok.ControlRadius)+2).FocusRing(true).
 		Padding(0, float32(tok.Spacing8), 0, float32(tok.Spacing4)).
 		Selected(selected).TextColor(tok.Text).
@@ -372,7 +381,7 @@ func (s *Shell) renderTreeNode(c *ui.Context, tok theme.Tokens, node *vault.Tree
 			if selected {
 				icoCol = tok.Text
 			}
-			ui.Icon(c, icon).Size(float32(tok.Spacing16)*0.85, float32(tok.Spacing16)*0.85).TextColor(icoCol)
+			ui.Icon(c, icon).Size(float32(tok.IconMd), float32(tok.IconMd)).TextColor(icoCol)
 			components.Text(c, node.Name).FontSize(float32(tok.TextData)).TextColor(tok.Text).
 				SingleLine().Ellipsis("…").Grow(1).MinWidth(0)
 			if shortDate != "" {
@@ -385,7 +394,7 @@ func (s *Shell) renderTreeNode(c *ui.Context, tok theme.Tokens, node *vault.Tree
 	if row.Clicked() {
 		s.SelectedTreePath = node.RelPath
 		if entry != nil && !isAsset {
-			s.OpenFileInPane(s.ActivePaneID, entry.RelPath, entry.Title, ModeEdit, false)
+			s.OpenFileInPane(s.ActivePaneID, entry.RelPath, entry.Title, s.DefaultFileOpenMode(), false)
 		} else if isAsset && s.OnRevealInExplorer != nil {
 			s.OnRevealInExplorer(node.RelPath)
 		}
@@ -411,19 +420,19 @@ func (s *Shell) renderTreeNode(c *ui.Context, tok theme.Tokens, node *vault.Tree
 	components.ContextMenu(c, row, func(m *components.Menu) {
 		if entry != nil && !isAsset {
 			if m.Item("打开").Chosen() {
-				s.OpenFileInPane(s.ActivePaneID, entry.RelPath, entry.Title, ModeEdit, false)
+				s.OpenFileInPane(s.ActivePaneID, entry.RelPath, entry.Title, s.DefaultFileOpenMode(), false)
 			}
 			if m.Item("在新标签页打开").Chosen() {
-				s.OpenFileInPane(s.ActivePaneID, entry.RelPath, entry.Title, ModeEdit, true)
+				s.OpenFileInPane(s.ActivePaneID, entry.RelPath, entry.Title, s.DefaultFileOpenMode(), true)
 			}
 			if m.Item("向右分屏打开").Chosen() {
 				s.SplitPaneWithTab(s.ActivePaneID, WorkspaceTab{
-					Kind: TabFile, Title: entry.Title, FilePath: entry.RelPath, Mode: ModeEdit,
+					Kind: TabFile, Title: entry.Title, FilePath: entry.RelPath, Mode: s.DefaultFileOpenMode(),
 				}, "right")
 			}
 			if m.Item("向下分屏打开").Chosen() {
 				s.SplitPaneWithTab(s.ActivePaneID, WorkspaceTab{
-					Kind: TabFile, Title: entry.Title, FilePath: entry.RelPath, Mode: ModeEdit,
+					Kind: TabFile, Title: entry.Title, FilePath: entry.RelPath, Mode: s.DefaultFileOpenMode(),
 				}, "down")
 			}
 			m.Separator()

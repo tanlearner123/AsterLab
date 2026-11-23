@@ -707,7 +707,7 @@ func (v *View) renderUnifiedCalculator(c *ui.Context, tok theme.Tokens, moduleID
 					custPill := ui.ButtonBase(c.Key("calc-mode:"+moduleID+":custom")).
 						Height(float32(tok.Spacing24)).Padding(0, float32(tok.Spacing8)).
 						AlignItems(ui.Center).AlignSelf(ui.Center).
-						Radius(float32(tok.ControlRadius)).Label("切换自定义 LaTeX 公式编辑")
+						Radius(float32(tok.ControlRadius)).Label("切换自定义公式编辑")
 					custFg := tok.TextMuted
 					if custAct {
 						custPill.Background(tok.AccentSoftBg).Border(1, tok.Accent.Alpha(0.35))
@@ -722,7 +722,7 @@ func (v *View) renderUnifiedCalculator(c *ui.Context, tok theme.Tokens, moduleID
 					custPill.Children(func() {
 						ui.Row(c).AlignItems(ui.Center).Gap(float32(tok.Spacing4)).Children(func() {
 							ui.Icon(c, lucide.Sigma()).Size(float32(tok.Spacing12), float32(tok.Spacing12)).TextColor(custFg)
-							ui.Text(c, "自定义 LaTeX").FontSize(float32(tok.TextMeta)).Bold().TextColor(custFg).SingleLine()
+							ui.Text(c, "自定义公式").FontSize(float32(tok.TextMeta)).Bold().TextColor(custFg).SingleLine()
 						})
 					})
 					if custPill.Clicked() {
@@ -827,14 +827,14 @@ func (v *View) renderUnifiedCalculator(c *ui.Context, tok theme.Tokens, moduleID
 						if formulaStr != "" {
 							copyBtn := ui.ButtonBase(c.Key("calc-copy-f:"+moduleID)).
 								Height(float32(tok.Spacing24)-2).Padding(0, float32(tok.Spacing8)).
-								AlignItems(ui.Center).Radius(float32(tok.ControlRadius)).Label("复制 LaTeX")
+								AlignItems(ui.Center).Radius(float32(tok.ControlRadius)).Label("复制公式")
 							if copyBtn.Hovered() {
 								copyBtn.Background(tok.Text.Alpha(0.05))
 							}
 							copyBtn.Children(func() {
 								ui.Row(c).AlignItems(ui.Center).Gap(float32(tok.Spacing4)).Children(func() {
 									ui.Icon(c, lucide.Copy()).Size(float32(tok.Spacing12), float32(tok.Spacing12)).TextColor(tok.TextMuted)
-									ui.Text(c, "复制 LaTeX").FontSize(float32(tok.TextMeta)).TextColor(tok.TextMuted).SingleLine()
+									ui.Text(c, "复制公式").FontSize(float32(tok.TextMeta)).TextColor(tok.TextMuted).SingleLine()
 								})
 							})
 							if copyBtn.Clicked() {
@@ -889,12 +889,12 @@ func (v *View) renderUnifiedCalculator(c *ui.Context, tok theme.Tokens, moduleID
 						if editableDesign {
 							eqBtn := ui.ButtonBase(c.Key("calc-2d-edit:"+moduleID)).
 								Padding(float32(tok.Spacing4), float32(tok.Spacing8)).
-								Radius(float32(tok.ControlRadius)).Label("点击编辑 LaTeX 公式")
+								Radius(float32(tok.ControlRadius)).Label("点击编辑公式")
 							if eqBtn.Hovered() {
 								eqBtn.Background(tok.AccentSoftBg.Alpha(0.55))
 							}
 							eqBtn.Children(render2D)
-							components.Tooltip(c, eqBtn, "点击展开/收起 LaTeX 公式编辑器")
+							components.Tooltip(c, eqBtn, "点击展开/收起公式编辑栏")
 							if eqBtn.Clicked() {
 								*customOpen = !*customOpen
 							}
@@ -1276,48 +1276,131 @@ func (v *View) renderUnifiedCalculator(c *ui.Context, tok theme.Tokens, moduleID
 							}
 						})
 
-						// Distinct Bordered Numeric Input Box (unmistakably an INPUT!)
+						// Notion-style Live Mention Chip for @plate / @calc / @param bindings (NEVER leak raw @syntax into input!)
+						isLinkedRef := strings.HasPrefix(strings.TrimSpace(valStr), "@")
 						dispVal := valStr
-						if !editableDesign && strings.HasPrefix(valStr, "@plate") {
-							if primaryPlate != nil {
-								if valStr == "@plate.sample_wells" {
-									dispVal = fmt.Sprintf("%d 实验孔", primaryPlate.SampleWells)
-								} else if valStr == "@plate.blank_wells" {
+						linkTip := ""
+						if isLinkedRef {
+							ref := strings.TrimSpace(valStr)
+							if strings.HasPrefix(ref, "@plate") {
+								if ref == "@plate.all_sample_wells" && docGraph != nil {
+									dispVal = fmt.Sprintf("%d 有效孔", docGraph.AllSampleWells())
+									linkTip = "自动汇总文档全部孔板有效孔"
+								} else if strings.HasSuffix(ref, ".sample_wells") {
+									targetPl := primaryPlate
+									if docGraph != nil && strings.Count(ref, ".") == 2 {
+										parts := strings.Split(ref, ".")
+										if named := docGraph.ContainerByID(parts[1]); named != nil {
+											targetPl = named
+										}
+									}
+									if targetPl != nil && targetPl.Assigned {
+										dispVal = fmt.Sprintf("%d 有效孔", targetPl.SampleWells)
+										linkTip = fmt.Sprintf("联动「%s」有效实验孔（自动剔除空白与异常孔）", firstNonEmpty(targetPl.Title, "孔板"))
+									} else {
+										dispVal = "待分配孔板"
+										linkTip = "请先在孔板中框选分配实验分组"
+									}
+								} else if strings.HasSuffix(ref, ".blank_wells") && primaryPlate != nil {
 									dispVal = fmt.Sprintf("%d 空白孔", primaryPlate.BlankWells)
-								} else {
+									linkTip = "联动孔板空白孔数"
+								} else if primaryPlate != nil && primaryPlate.Assigned {
 									dispVal = fmt.Sprintf("%d 孔", primaryPlate.TotalWells)
+									linkTip = fmt.Sprintf("联动「%s」已分配孔数", firstNonEmpty(primaryPlate.Title, "孔板"))
+								} else {
+									dispVal = "联动孔数"
+									linkTip = "自动同步孔板孔数"
 								}
-							} else {
-								dispVal = "自动统计孔数"
-							}
-						} else if !editableDesign && strings.HasPrefix(valStr, "@calc.") && docGraph != nil {
-							for _, co := range docGraph.CalcOutputs {
-								if fmt.Sprintf("@calc.%s.%s", co.ModuleID, co.Key) == valStr {
-									dispVal = formatNumber(co.Amount) + " (联动)"
-									break
+							} else if strings.HasPrefix(ref, "@calc.") && docGraph != nil {
+								matched := false
+								for _, co := range docGraph.CalcOutputs {
+									if fmt.Sprintf("@calc.%s.%s", co.ModuleID, co.Key) == ref {
+										amt := co.Amount
+										if conv, ok, _ := ConvertScientificUnit(amt, co.Unit, runit); ok {
+											amt = conv
+										}
+										dispVal = formatNumber(round4(amt))
+										if runit != "" {
+											dispVal += " " + DisplayUnit(runit)
+										} else if co.Unit != "" {
+											dispVal += " " + DisplayUnit(co.Unit)
+										}
+										linkTip = fmt.Sprintf("联动「%s · %s」(%s %s)", co.Title, co.Label, formatNumber(co.Amount), DisplayUnit(co.Unit))
+										matched = true
+										break
+									}
 								}
+								if !matched {
+									dispVal = "上游计算"
+									linkTip = "联动上游计算结果"
+								}
+							} else if strings.HasPrefix(ref, "@group.") {
+								dispVal = "分组孔数"
+								linkTip = "联动实验分组孔数"
+							} else if strings.HasPrefix(ref, "@param.") {
+								dispVal = "实验参数"
+								linkTip = "联动参数表数值"
 							}
 						}
-						ui.Box(c).Width(float32(tok.Spacing48)*2.3).Shrink(0).
-							Padding(float32(tok.Spacing4)*0.6, float32(tok.Spacing8)).
-							Radius(float32(tok.ControlRadius)).Background(tok.Surface).Border(1, tok.BorderStrong.Alpha(0.55)).Children(func() {
-							if !v.ReadOnly {
-								vKey := fmt.Sprintf("calc_v:%s:%d", moduleID, idx)
-								vBuf := v.ensureWidgetDraft(vKey, valStr)
-								tb := BorderlessTextInput(c, tok, vBuf, float32(tok.TextData), true, "输入数值").FontFeatures("tnum")
-								if val, ok := v.syncDraftInput(vKey, valStr, tb, vBuf); ok {
-									next := cloneRowsSlice(rows)
-									if num, err := strconv.ParseFloat(val, 64); err == nil {
-										next[idx]["value"] = num
-									} else {
-										next[idx]["value"] = val
+
+						if isLinkedRef {
+							chipRow := ui.Row(c.Key(fmt.Sprintf("calc-link:%s:%d", moduleID, idx))).
+								Width(float32(tok.Spacing48)*2.3).Shrink(0).
+								Padding(float32(tok.Spacing4)*0.6, float32(tok.Spacing8)).
+								Radius(float32(tok.ControlRadius)).
+								Background(tok.AccentSoftBg).Border(1, tok.Accent.Alpha(0.35)).
+								AlignItems(ui.Center).Gap(float32(tok.Spacing4))
+							chipRow.Children(func() {
+								ui.Icon(c, lucide.Link2()).Size(float32(tok.Spacing12), float32(tok.Spacing12)).TextColor(tok.Accent).Shrink(0)
+								ui.Text(c, dispVal).FontSize(float32(tok.TextMeta)).Bold().TextColor(tok.Accent).
+									FontFeatures("tnum").SingleLine().Ellipsis("…").Grow(1).MinWidth(0)
+								if !v.ReadOnly {
+									unlinkBtn := ui.ButtonBase(c.Key(fmt.Sprintf("calc-unlink:%s:%d", moduleID, idx))).
+										Size(float32(tok.Spacing16), float32(tok.Spacing16)).Center().
+										Radius(float32(tok.ControlRadius)).Label("解除联动改手动输入")
+									if unlinkBtn.Hovered() {
+										unlinkBtn.Background(tok.Accent.Alpha(0.15))
 									}
-									v.emitAnyModuleEdit(moduleID, map[string]any{"rows": next})
+									unlinkBtn.Children(func() {
+										ui.Icon(c, lucide.X()).Size(float32(tok.Spacing12)-2, float32(tok.Spacing12)-2).TextColor(tok.Accent)
+									})
+									if unlinkBtn.Clicked() {
+										next := cloneRowsSlice(rows)
+										// Unlink cleanly to current resolved numeric value so user never loses the number!
+										fallbackNum := 0.0
+										if idx < len(res.Rows) {
+											fallbackNum = res.Rows[idx].Amount
+										}
+										next[idx]["value"] = round4(fallbackNum)
+										v.emitAnyModuleEdit(moduleID, map[string]any{"rows": next})
+									}
 								}
-							} else {
-								ui.Text(c, dispVal).FontSize(float32(tok.TextData)).Bold().TextColor(tok.Text).FontFeatures("tnum").SingleLine()
+							})
+							if linkTip != "" {
+								components.Tooltip(c, chipRow, linkTip)
 							}
-						})
+						} else {
+							ui.Box(c).Width(float32(tok.Spacing48)*2.3).Shrink(0).
+								Padding(float32(tok.Spacing4)*0.6, float32(tok.Spacing8)).
+								Radius(float32(tok.ControlRadius)).Background(tok.Surface).Border(1, tok.BorderStrong.Alpha(0.55)).Children(func() {
+								if !v.ReadOnly {
+									vKey := fmt.Sprintf("calc_v:%s:%d", moduleID, idx)
+									vBuf := v.ensureWidgetDraft(vKey, valStr)
+									tb := BorderlessTextInput(c, tok, vBuf, float32(tok.TextData), true, "输入数值").FontFeatures("tnum")
+									if val, ok := v.syncDraftInput(vKey, valStr, tb, vBuf); ok {
+										next := cloneRowsSlice(rows)
+										if num, err := strconv.ParseFloat(val, 64); err == nil {
+											next[idx]["value"] = num
+										} else {
+											next[idx]["value"] = val
+										}
+										v.emitAnyModuleEdit(moduleID, map[string]any{"rows": next})
+									}
+								} else {
+									ui.Text(c, dispVal).FontSize(float32(tok.TextData)).Bold().TextColor(tok.Text).FontFeatures("tnum").SingleLine()
+								}
+							})
+						}
 
 						// Unit pill / input
 						ui.Box(c).Width(float32(tok.Spacing48)*1.5).Shrink(0).Children(func() {
@@ -2024,6 +2107,19 @@ func (v *View) renderUnifiedTimer(c *ui.Context, tok theme.Tokens, moduleID, tit
 						AlignItems(ui.Center).Gap(float32(tok.Spacing4)).Children(func() {
 						ui.Icon(c, lucide.BellRing()).Size(float32(tok.Spacing12)+1, float32(tok.Spacing12)+1).TextColor(fg)
 						ui.Text(c, statusMsg).FontSize(float32(tok.TextMeta)).Bold().TextColor(fg).FontFeatures("tnum")
+						if !v.ReadOnly {
+							resetBtn := ui.ButtonBase(c.Key("tm-reset-anc:"+moduleID)).
+								Padding(0, float32(tok.Spacing4)).Radius(float32(tok.ControlRadius)).Label("重设时间起点")
+							resetBtn.Children(func() {
+								ui.Text(c, "重设").FontSize(float32(tok.TextMeta)-1).TextColor(fg.Alpha(0.8))
+							})
+							if resetBtn.Clicked() {
+								if v.anchorClock != nil {
+									delete(v.anchorClock, ancKey)
+								}
+								v.emitAnyModuleEdit(moduleID, map[string]any{"started_at": ""})
+							}
+						}
 					})
 				} else if !v.ReadOnly {
 					stampBtn := ui.ButtonBase(c.Key("tm-stamp:"+moduleID)).
@@ -2051,16 +2147,51 @@ func (v *View) renderUnifiedTimer(c *ui.Context, tok theme.Tokens, moduleID, tit
 			if editableDesign && inlineStatus == "idle" {
 				ui.Row(c.Key("tm-win-ed:"+moduleID)).FillWidth().Wrap().AlignItems(ui.Center).
 					Gap(float32(tok.Spacing8)).Padding(0, 0, 0, float32(tok.Spacing24)).Children(func() {
-					ui.Text(c, "锚点").FontSize(float32(tok.TextMeta)).TextColor(tok.TextMuted)
+					ui.Text(c, "时间起点").FontSize(float32(tok.TextMeta)).TextColor(tok.TextMuted)
 					aBuf := v.ensureWidgetDraft("tm:"+moduleID+":anchor", firstNonEmpty(anchorVal, "t0"))
-					ui.Box(c).Width(float32(tok.Spacing48)*1.5).Children(func() {
-						tb := BorderlessTextInput(c, tok, aBuf, float32(tok.TextMeta), false, "如 t0")
-						if tb.Submitted() || (!tb.Focused() && strings.TrimSpace(*aBuf) != anchorVal) {
-							if av := strings.TrimSpace(*aBuf); av != "" {
-								v.emitAnyModuleEdit(moduleID, map[string]any{"anchor": av})
+					var ancOpts []struct{ id, lbl string }
+					seenAnc := map[string]bool{}
+					if v.Doc != nil {
+						for _, a := range BuildSciGraph(v.Doc).Anchors {
+							if a.ID != "" && !seenAnc[a.ID] {
+								seenAnc[a.ID] = true
+								lbl := a.ID
+								if a.StepTitle != "" {
+									lbl = fmt.Sprintf("%s（%s）", a.StepTitle, a.ID)
+								}
+								ancOpts = append(ancOpts, struct{ id, lbl string }{a.ID, lbl})
 							}
 						}
+					}
+					if !seenAnc["t0"] {
+						ancOpts = append(ancOpts, struct{ id, lbl string }{"t0", "t0（默认起点）"})
+					}
+					if *aBuf != "" && !seenAnc[*aBuf] && *aBuf != "t0" {
+						ancOpts = append(ancOpts, struct{ id, lbl string }{*aBuf, *aBuf})
+					}
+					ancSel := components.Select(c.Key("tm-anc-sel:"+moduleID), aBuf)
+					StyleSelectQuiet(c, tok, ancSel)
+					curAncLbl := *aBuf
+					for _, opt := range ancOpts {
+						if opt.id == *aBuf {
+							curAncLbl = opt.lbl
+							break
+						}
+					}
+					ancSel.Trigger.Children(func() {
+						ui.Text(c, firstNonEmpty(curAncLbl, "选择起点")).FontSize(float32(tok.TextMeta)).TextColor(tok.Text).SingleLine()
 					})
+					ancSel.Popup(func(p ui.Element) {
+						for _, opt := range ancOpts {
+							opt := opt
+							ancSel.Item(opt.id).Children(func() {
+								ui.Text(c, opt.lbl).FontSize(float32(tok.TextMeta)).TextColor(tok.Text)
+							})
+						}
+					})
+					if strings.TrimSpace(*aBuf) != "" && strings.TrimSpace(*aBuf) != anchorVal {
+						v.emitAnyModuleEdit(moduleID, map[string]any{"anchor": strings.TrimSpace(*aBuf)})
+					}
 					ui.Text(c, "窗口说明").FontSize(float32(tok.TextMeta)).TextColor(tok.TextMuted)
 					wBuf := v.ensureWidgetDraft("tm:"+moduleID+":win", schedWin)
 					ui.Box(c).Grow(1).MinWidth(float32(tok.Spacing48)*2.5).Children(func() {

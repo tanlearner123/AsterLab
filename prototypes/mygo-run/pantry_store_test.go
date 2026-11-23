@@ -250,3 +250,269 @@ func TestObsidianVaultPantryAnd27InchVisualAudit(t *testing.T) {
 	})
 	sh.VaultSettingsOpen = false
 }
+
+func TestStandalonePantrySingleClickOpensDetailAndBoxDialogs(t *testing.T) {
+	t.Setenv("LABWORKBENCH_DATA_DIR", t.TempDir())
+	root := filepath.Join(t.TempDir(), "pantry-ui-vault")
+	a := &app{shell: &shell.Shell{TodayDate: "2026-11-23", SelectedDate: "2026-11-23"}}
+	if err := a.initVaultWorkspace(root); err != nil {
+		t.Fatalf("initVaultWorkspace: %v", err)
+	}
+	shelf := uint32(180)
+	if _, err := a.localUpsertPantry(runs.PantryUpsert{
+		Name:          "Vancomycin Stock",
+		Location:      "-20°C 冰箱",
+		PurchasedOn:   "2026-11-20",
+		ShelfLifeDays: &shelf,
+	}); err != nil {
+		t.Fatalf("seed pantry: %v", err)
+	}
+	a.tools = a.newToolsWorkspace()
+
+	st := ui.NewTester(func(c *ui.Context) {
+		tools.ViewPantry(c, a.tools)
+	}, 1280, 800)
+	st.Frame()
+	if !st.HasText("Vancomycin Stock") {
+		t.Fatalf("expected reagent on standalone pantry shelf, got: %q", st.Texts())
+	}
+
+	// Single click on the shelf bottle/label must open AND render the Reagent Detail Dialog.
+	st.Click("Vancomycin Stock")
+	st.Frame()
+	if !a.tools.PantryDialogOpen {
+		t.Fatalf("expected single-click to set PantryDialogOpen=true")
+	}
+	if !st.HasText("保存试剂档案") || !st.HasText("说明书与产品网址") {
+		t.Fatalf("expected reagent detail dialog to actually render in ViewPantry, got: %q", st.Texts())
+	}
+	a.tools.PantryDialogOpen = false
+	st.Frame()
+
+	// Single click on "+ 新建收纳盒" must open AND render the Box Dialog.
+	st.Click("+ 新建收纳盒")
+	st.Frame()
+	if !a.tools.PantryBoxDialogOpen {
+		t.Fatalf("expected + 新建收纳盒 click to set PantryBoxDialogOpen=true")
+	}
+	if !st.HasText("保存收纳盒") || !st.HasText("选择容器规格") {
+		t.Fatalf("expected box dialog to actually render in ViewPantry, got: %q", st.Texts())
+	}
+}
+
+func TestVaultIsolatedPantryLastVaultMemoryAndNoGlobalPollution(t *testing.T) {
+	globalData := t.TempDir()
+	t.Setenv("LABWORKBENCH_DATA_DIR", globalData)
+	t.Setenv("ASTERLAB_VAULT_DIR", "")
+
+	// Plant legacy global pantry item & legacy experiment in globalData — must NEVER leak into user Vaults.
+	legacyJSON := `{"nextSeq":1,"items":[{"id":"legacy-1","labelCode":"PN-001","name":"Legacy Global GelMA","location":"4°C","revision":1}]}`
+	if err := os.WriteFile(filepath.Join(globalData, "pantry-ledger.json"), []byte(legacyJSON), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	legacyExpDir := filepath.Join(globalData, "experiments", "old-exp")
+	if err := os.MkdirAll(legacyExpDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(legacyExpDir, "experiment.asterml"), []byte("---\ntitle: 旧全局实验\n---\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	vaultA := filepath.Join(t.TempDir(), "VaultA")
+	vaultB := filepath.Join(t.TempDir(), "VaultB")
+	a := &app{shell: &shell.Shell{TodayDate: "2026-11-23", SelectedDate: "2026-11-23"}}
+	a.tools = a.newToolsWorkspace()
+
+	a.switchVaultRoot(vaultA)
+	if a.syncErr != "" {
+		t.Fatalf("switchVaultRoot(vaultA): %s", a.syncErr)
+	}
+	if len(a.tools.Pantry.Items) != 0 {
+		t.Fatalf("expected fresh VaultA pantry to be isolated and empty, got %d items: %+v", len(a.tools.Pantry.Items), a.tools.Pantry.Items)
+	}
+	if len(a.shell.Experiments) != 0 {
+		t.Fatalf("expected fresh VaultA not to inherit legacy global experiments, got: %+v", a.shell.Experiments)
+	}
+
+	// Add a reagent inside VaultA and verify it persists strictly under <VaultA>/.asterlab/pantry.jsonl.
+	if _, err := a.localUpsertPantry(runs.PantryUpsert{Name: "Lysostaphin 1 mg/mL", Location: "-20°C"}); err != nil {
+		t.Fatalf("upsert VaultA reagent: %v", err)
+	}
+	a.tools.ReloadPantry()
+	a.syncPantrySnapshotToShell()
+	if _, err := os.Stat(filepath.Join(vaultA, ".asterlab", pantryJSONLFileName)); err != nil {
+		t.Fatalf("expected VaultA single-file pantry.jsonl inside .asterlab/: %v", err)
+	}
+	for _, legacyName := range []string{"pantry-ledger.json", "pantry-meta.json", "pantry-boxes.json"} {
+		if _, err := os.Stat(filepath.Join(vaultA, ".asterlab", legacyName)); !os.IsNotExist(err) {
+			t.Fatalf("expected fresh VaultA not to create legacy %s alongside pantry.jsonl", legacyName)
+		}
+	}
+	if len(a.shell.PantryItems) != 1 {
+		t.Fatalf("expected 1 pantry item synced to shell in VaultA, got %d", len(a.shell.PantryItems))
+	}
+
+	// Switch to VaultB: pantry AND right-drawer snapshot must both reset to empty cleanly.
+	a.switchVaultRoot(vaultB)
+	if len(a.tools.Pantry.Items) != 0 || len(a.shell.PantryItems) != 0 {
+		t.Fatalf("expected VaultB pantry isolated from VaultA, tools=%d shell=%d", len(a.tools.Pantry.Items), len(a.shell.PantryItems))
+	}
+
+	// Next cold start with empty vaultRoot must automatically reopen VaultB from vault-prefs.json.
+	b := &app{shell: &shell.Shell{TodayDate: "2026-11-23", SelectedDate: "2026-11-23"}}
+	if err := b.initVaultWorkspace(""); err != nil {
+		t.Fatalf("reopen last vault: %v", err)
+	}
+	if !strings.EqualFold(filepath.Clean(b.vault.Root), filepath.Clean(vaultB)) {
+		t.Fatalf("expected startup to remember last switched VaultB (%s), got %s", vaultB, b.vault.Root)
+	}
+}
+
+func TestVaultLiveDiskWatcherAndAgentGuideDiscovery(t *testing.T) {
+	t.Setenv("LABWORKBENCH_DATA_DIR", t.TempDir())
+	root := filepath.Join(t.TempDir(), "LiveWatchVault")
+	a := &app{shell: &shell.Shell{TodayDate: "2026-11-23", SelectedDate: "2026-11-23"}}
+	if err := a.initVaultWorkspace(root); err != nil {
+		t.Fatalf("initVaultWorkspace: %v", err)
+	}
+
+	// 1. AGENTS.md must be seeded automatically for zero-context AI Agents, without cluttering VaultTree.
+	guidePath := filepath.Join(root, vault.AgentGuideFileName)
+	guideRaw, err := os.ReadFile(guidePath)
+	if err != nil {
+		t.Fatalf("expected AGENTS.md seeded in vault root: %v", err)
+	}
+	if !strings.Contains(string(guideRaw), "asterdoc.validate") || !strings.Contains(string(guideRaw), `unit`) {
+		t.Fatalf("expected AGENTS.md to include CLI validation and UCUM unit guidance")
+	}
+	for _, f := range a.shell.VaultFiles {
+		if strings.EqualFold(filepath.Base(f.RelPath), vault.AgentGuideFileName) {
+			t.Fatalf("AGENTS.md should not clutter experiment VaultFiles: %+v", f)
+		}
+	}
+
+	// 2. External Agent writes a new `.asterml` file directly to disk inside a new subfolder.
+	extDir := filepath.Join(root, "Fig3.5-抗菌实验")
+	if err := os.MkdirAll(extDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	extFile := filepath.Join(extDir, "外部Agent新实验.asterml")
+	v1 := "---\ntitle: 外部 Agent 计划 v1\nscheduled_date: 2026-11-24\nstage: planned\n---\n\n#@ 01 准备菌液\n"
+	if err := os.WriteFile(extFile, []byte(v1), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	if !a.syncVaultDiskChangesNow() {
+		t.Fatal("expected syncVaultDiskChangesNow to detect externally added .asterml file")
+	}
+	found := false
+	for _, exp := range a.shell.Experiments {
+		if exp.FilePath == "Fig3.5-抗菌实验/外部Agent新实验.asterml" && exp.Title == "外部 Agent 计划 v1" {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatalf("expected externally written file in shell.Experiments, got: %+v", a.shell.Experiments)
+	}
+
+	// 3. Open the document, then externally edit it on disk -> watcher must reload LiveDocument automatically.
+	ld, err := a.docStore.Open("Fig3.5-抗菌实验/外部Agent新实验.asterml")
+	if err != nil {
+		t.Fatalf("docStore.Open: %v", err)
+	}
+	v2 := "---\ntitle: 外部 Agent 计划 v2\nscheduled_date: 2026-11-24\nstage: in_progress\n---\n\n#@ 01 准备菌液\n\n#@ 02 涂板计数\n"
+	if err := os.WriteFile(extFile, []byte(v2), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	future := time.Now().Add(2 * time.Second)
+	_ = os.Chtimes(extFile, future, future)
+
+	if !a.syncVaultDiskChangesNow() {
+		t.Fatal("expected syncVaultDiskChangesNow to detect external edit to open .asterml")
+	}
+	if !strings.Contains(ld.Source, "外部 Agent 计划 v2") {
+		t.Fatalf("expected open LiveDocument to auto-reload external disk changes, got: %q", ld.Source)
+	}
+}
+
+func TestPantryJSONLSingleFileSyncMigrationAndExternalAppend(t *testing.T) {
+	t.Setenv("LABWORKBENCH_DATA_DIR", t.TempDir())
+
+	// 1. Unified single-file write (boxes + reagent + meta) without volatile derived fields on disk.
+	root := filepath.Join(t.TempDir(), "JSONLVault")
+	a := &app{shell: &shell.Shell{TodayDate: "2026-11-23", SelectedDate: "2026-11-23"}}
+	if err := a.initVaultWorkspace(root); err != nil {
+		t.Fatalf("initVaultWorkspace: %v", err)
+	}
+	a.tools = a.newToolsWorkspace()
+
+	if err := a.savePantryBoxes([]tools.PantryBox{{
+		ID: "box-1", Name: "抗菌冻存盒 #1", Kind: tools.BoxCryo9x9, ZoneKey: "-80", Rows: 9, Cols: 9,
+	}}); err != nil {
+		t.Fatalf("savePantryBoxes: %v", err)
+	}
+	shelf := uint32(365)
+	saved, err := a.localUpsertPantry(runs.PantryUpsert{
+		Name: "Vancomycin HCl", Location: "-80°C", PurchasedOn: "2026-11-20", ShelfLifeDays: &shelf,
+	})
+	if err != nil {
+		t.Fatalf("localUpsertPantry: %v", err)
+	}
+	if err := a.savePantryMeta(map[string]tools.PantryItemMeta{
+		saved.ID: {CatalogNo: "Sigma V2002", LotNo: "LOT-2026A", BoxID: "box-1", BoxSlot: "A1"},
+	}); err != nil {
+		t.Fatalf("savePantryMeta: %v", err)
+	}
+
+	jsonlPath := filepath.Join(root, ".asterlab", pantryJSONLFileName)
+	rawBytes, err := os.ReadFile(jsonlPath)
+	if err != nil {
+		t.Fatalf("read pantry.jsonl: %v", err)
+	}
+	rawStr := string(rawBytes)
+	if !strings.Contains(rawStr, `"type":"schema"`) || !strings.Contains(rawStr, `"type":"box"`) || !strings.Contains(rawStr, `"type":"reagent"`) {
+		t.Fatalf("expected schema + box + reagent lines in pantry.jsonl, got:\n%s", rawStr)
+	}
+	if !strings.Contains(rawStr, `"catalogNo":"Sigma V2002"`) || !strings.Contains(rawStr, `"boxSlot":"A1"`) {
+		t.Fatalf("expected reagent metadata embedded on reagent line, got:\n%s", rawStr)
+	}
+	if strings.Contains(rawStr, `"daysRemaining"`) || strings.Contains(rawStr, `"expiresOn"`) {
+		t.Fatalf("expected volatile derived fields omitted from pantry.jsonl for clean diffs, got:\n%s", rawStr)
+	}
+
+	// 2. External Agent appends a minimal reagent line -> live watcher picks it up automatically.
+	appended := rawStr + `{"type":"reagent","name":"Lysostaphin 2 mg/mL","location":"-20°C","purchasedOn":"2026-11-23","shelfLifeDays":180}` + "\n"
+	if err := os.WriteFile(jsonlPath, []byte(appended), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	future := time.Now().Add(2 * time.Second)
+	_ = os.Chtimes(jsonlPath, future, future)
+
+	if !a.syncVaultDiskChangesNow() {
+		t.Fatal("expected syncVaultDiskChangesNow to detect external append to .asterlab/pantry.jsonl")
+	}
+	if len(a.tools.Pantry.Items) != 2 {
+		t.Fatalf("expected 2 pantry items after external JSONL append, got %d: %+v", len(a.tools.Pantry.Items), a.tools.Pantry.Items)
+	}
+
+	// 3. Legacy 3-file JSON auto-migrates losslessly into single-file pantry.jsonl on first load.
+	migDir := filepath.Join(t.TempDir(), "LegacyMig")
+	if err := os.MkdirAll(migDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	_ = os.WriteFile(filepath.Join(migDir, "pantry-ledger.json"), []byte(`{"nextSeq":2,"items":[{"id":"old-1","labelCode":"PN-002","name":"Old PBS","location":"4°C","revision":1}]}`), 0o644)
+	_ = os.WriteFile(filepath.Join(migDir, "pantry-meta.json"), []byte(`{"old-1":{"catalogNo":"Gibco 10010","boxId":"old-box","boxSlot":"B3"}}`), 0o644)
+	_ = os.WriteFile(filepath.Join(migDir, "pantry-boxes.json"), []byte(`[{"id":"old-box","name":"4C 管架","kind":"tube_rack_15ml","zoneKey":"4C","rows":5,"cols":5}]`), 0o644)
+
+	migrated, err := loadPantryStore(migDir)
+	if err != nil {
+		t.Fatalf("loadPantryStore legacy migration: %v", err)
+	}
+	if len(migrated.Items) != 1 || migrated.Items[0].Name != "Old PBS" || len(migrated.Boxes) != 1 || migrated.Meta["old-1"].CatalogNo != "Gibco 10010" {
+		t.Fatalf("unexpected migrated store: %+v", migrated)
+	}
+	if _, err := os.Stat(filepath.Join(migDir, pantryJSONLFileName)); err != nil {
+		t.Fatalf("expected pantry.jsonl written during migration: %v", err)
+	}
+}

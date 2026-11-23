@@ -148,29 +148,33 @@ func (s *Shell) renderGlobalSearchModal(c *ui.Context) {
 							if selected {
 								targetBg = tok.AccentSoftBg
 							}
-							row := ui.Row(c.Key(fmt.Sprintf("gsearch-%d-%s", hit.LineNum, hit.RelPath))).
-								FillWidth().Padding(float32(tok.Spacing8), float32(tok.Spacing8)).
-								Radius(float32(tok.ControlRadius)).Gap(float32(tok.Spacing8)).AlignItems(ui.Center)
+							row := ui.ButtonBase(c.Key(fmt.Sprintf("gsearch-%d-%d-%s", i, hit.LineNum, hit.RelPath))).
+								Label(firstNonEmptyStr(hit.Title, hit.RelPath)).
+								FillWidth().Justify(ui.Start).
+								Padding(float32(tok.Spacing8), float32(tok.Spacing8)).
+								Radius(float32(tok.ControlRadius))
 							if row.Hovered() && !selected {
 								targetBg = tok.Elevated
 							}
 							row.Background(row.AnimateColor("gs-bg", targetBg, theme.MotionMicroFade))
 							theme.ApplyTactilePress(row)
 							row.Children(func() {
-								ui.Icon(c, lucide.FileText()).Size(float32(tok.Spacing16), float32(tok.Spacing16)).TextColor(tok.Accent)
-								ui.Column(c).Grow(1).MinWidth(0).Gap(float32(tok.Spacing4) * 0.5).Children(func() {
-									ui.Row(c).FillWidth().AlignItems(ui.Center).Gap(float32(tok.Spacing8)).Children(func() {
-										components.Text(c, firstNonEmptyStr(hit.Title, hit.RelPath)).
-											FontSize(float32(tok.TextBody)).Bold().TextColor(tok.Text).SingleLine().Ellipsis("…")
-										if hit.Date != "" {
-											components.Text(c, hit.Date).FontSize(float32(tok.TextMeta)).TextColor(tok.TextMuted).FontFeatures("tnum")
+								ui.Row(c).FillWidth().Gap(float32(tok.Spacing8)).AlignItems(ui.Center).Children(func() {
+									ui.Icon(c, lucide.FileText()).Size(float32(tok.Spacing16), float32(tok.Spacing16)).TextColor(tok.Accent)
+									ui.Column(c).Grow(1).MinWidth(0).Gap(float32(tok.Spacing4) * 0.5).Children(func() {
+										ui.Row(c).FillWidth().AlignItems(ui.Center).Gap(float32(tok.Spacing8)).Children(func() {
+											components.Text(c, firstNonEmptyStr(hit.Title, hit.RelPath)).
+												FontSize(float32(tok.TextBody)).Bold().TextColor(tok.Text).SingleLine().Ellipsis("…")
+											if hit.Date != "" {
+												components.Text(c, hit.Date).FontSize(float32(tok.TextMeta)).TextColor(tok.TextMuted).FontFeatures("tnum")
+											}
+										})
+										snip := hit.Snippet
+										if hit.LineNum > 0 {
+											snip = fmt.Sprintf("L%d: %s", hit.LineNum, snip)
 										}
+										components.Text(c, snip).FontSize(float32(tok.TextMeta)).TextColor(tok.TextMuted).SingleLine().Ellipsis("…")
 									})
-									snip := hit.Snippet
-									if hit.LineNum > 0 {
-										snip = fmt.Sprintf("L%d: %s", hit.LineNum, snip)
-									}
-									components.Text(c, snip).FontSize(float32(tok.TextMeta)).TextColor(tok.TextMuted).SingleLine().Ellipsis("…")
 								})
 							})
 							if row.Clicked() {

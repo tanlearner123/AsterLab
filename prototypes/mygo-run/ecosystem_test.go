@@ -72,7 +72,7 @@ func TestEcosystemOnboardingFeedbackAndCrashBanner(t *testing.T) {
 		sh.RenderSplitView(c)
 	}, 1440, 900)
 	tt.Frame()
-	if !tt.HasText("欢迎使用 AsterLab") || !tt.HasText("体验「CCK-8 细胞活力示范实验库」") {
+	if !tt.HasText("欢迎使用 AsterLab") || !tt.HasText("体验「CCK-8 细胞活力」完整示范实验") {
 		t.Fatalf("expected onboarding dialog content, got: %q", tt.Texts())
 	}
 

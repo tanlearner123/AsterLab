@@ -65,8 +65,8 @@ func TestAccessibilityPrefsScaleAndReduceMotion(t *testing.T) {
 	s := &Shell{TextScale: 1.25, ReduceMotion: true}
 	s.SetInitialThemeLook(theme.PresetObsidian, true)
 	tok := s.SyncThemeLook(nil)
-	if tok.TextBody <= 14 {
-		t.Fatalf("expected TextScale=1.25 to enlarge TextBody (>14), got %d", tok.TextBody)
+	if tok.TextBody <= 15 {
+		t.Fatalf("expected TextScale=1.25 to enlarge TextBody (>15), got %d", tok.TextBody)
 	}
 	if !theme.ReducedMotionEnabled() {
 		t.Fatalf("expected ReducedMotionEnabled() to be true")
@@ -78,8 +78,8 @@ func TestAccessibilityPrefsScaleAndReduceMotion(t *testing.T) {
 	s.TextScale = 0
 	s.ReduceMotion = false
 	tok2 := s.SyncThemeLook(nil)
-	if tok2.TextBody != 14 {
-		t.Fatalf("expected default TextBody=14 after reset, got %d", tok2.TextBody)
+	if tok2.TextBody != 15 {
+		t.Fatalf("expected default TextBody=15 after reset, got %d", tok2.TextBody)
 	}
 	if theme.ReducedMotionEnabled() {
 		t.Fatalf("expected ReducedMotionEnabled() to reset to false")

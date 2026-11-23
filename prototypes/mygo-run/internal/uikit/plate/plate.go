@@ -1165,7 +1165,11 @@ func wellGlyphAdaptive(props Props, well WellState, role string, cellW float32) 
 				return compactTag(s, maxRunes)
 			}
 			if well.Group != "" {
-				return compactTag(strings.TrimPrefix(well.Group, "g-"), maxRunes)
+				lbl := well.Group
+				if gl := strings.TrimSpace(props.GroupLabels[well.Group]); gl != "" {
+					lbl = gl
+				}
+				return compactTag(strings.TrimPrefix(lbl, "g-"), maxRunes)
 			}
 		}
 		if well.Replicate > 0 {
@@ -1186,6 +1190,21 @@ func compactTag(s string, maxRunes int) string {
 	rs := []rune(s)
 	if len(rs) <= maxRunes {
 		return s
+	}
+	// Preserve trailing identifier (e.g. "Donor-1" -> "Don-1" instead of "Donor-")
+	if maxRunes >= 4 {
+		last := rs[len(rs)-1]
+		if unicode.IsDigit(last) {
+			// Find contiguous trailing digits (and optional short separator like '-').
+			tailStart := len(rs) - 1
+			for tailStart > 0 && unicode.IsDigit(rs[tailStart-1]) {
+				tailStart--
+			}
+			tail := rs[tailStart:]
+			if len(tail) <= 2 && maxRunes-len(tail)-1 >= 2 {
+				return string(rs[:maxRunes-len(tail)-1]) + "·" + string(tail)
+			}
+		}
 	}
 	return string(rs[:maxRunes])
 }

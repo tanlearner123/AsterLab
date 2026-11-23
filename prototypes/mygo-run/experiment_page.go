@@ -297,7 +297,7 @@ func (a *app) renderVaultTabContent(c *ui.Context, pane *shell.PaneNode, tab she
 		}
 	}
 
-	pageCol := ui.Column(c.Key("vault-page:"+pane.ID+":"+tab.ID)).Fill()
+	pageCol := ui.Column(c.Key("vault-page:"+pane.ID+":"+tab.ID+":"+tab.FilePath)).Fill()
 	theme.PaintCanvasBackground(pageCol, tok)
 	findOpen := ui.Local(c.Root(), "doc-find-open:"+pane.ID+":"+tab.ID, func() bool { return false })
 	findQuery := ui.Local(c.Root(), "doc-find-q:"+pane.ID+":"+tab.ID, func() string { return "" })
@@ -344,26 +344,60 @@ func (a *app) renderVaultTabContent(c *ui.Context, pane *shell.PaneNode, tab she
 				}
 
 				if tab.Mode == shell.ModeSource {
+					components.Badge(c, "高级源码视图", components.BadgeOptions{Tone: components.BadgeWarning}).AlignSelf(ui.Center)
 					if components.Button(c, "返回编辑", components.ButtonSecondary).Clicked() {
 						setTabMode(shell.ModeEdit)
 						tab.Mode = shell.ModeEdit
 					}
-				} else if tab.Mode == shell.ModeLab {
-					components.Badge(c, "实验模式 · 防误触", components.BadgeOptions{Tone: components.BadgeAccent}).AlignSelf(ui.Center)
-					edBtn := components.IconButton(c, lucide.PenLine(), "返回编辑模式 (Ctrl+E)", components.IconButtonCompact)
-					if edBtn.Clicked() {
-						setTabMode(shell.ModeEdit)
-						tab.Mode = shell.ModeEdit
-					}
 				} else {
-					labBtn := components.IconButton(c, lucide.FlaskConical(), "切换到实验模式 · 防误触执行 (Ctrl+E)", components.IconButtonCompact)
-					if labBtn.Clicked() {
-						setTabMode(shell.ModeLab)
-						tab.Mode = shell.ModeLab
-					}
+					// Calm compact 2-segment mode switch: [ 编辑 | 实验 ]
+					ui.Row(c.Key("doc-mode-seg:"+tab.ID)).AlignSelf(ui.Center).
+						Padding(2).Radius(float32(tok.ControlRadius)).
+						Background(tok.Elevated).Border(1, tok.Border).Gap(2).Children(func() {
+						edAct := tab.Mode == shell.ModeEdit
+						edSeg := ui.ButtonBase(c.Key("doc-mode-ed:"+tab.ID)).
+							Height(float32(tok.Spacing24)-2).Padding(0, float32(tok.Spacing8)).
+							AlignItems(ui.Center).Radius(float32(tok.ControlRadius)).Label("编辑设计模式 (Ctrl+E)")
+						if edAct {
+							edSeg.Background(tok.Surface)
+						}
+						edSeg.Children(func() {
+							col := tok.TextMuted
+							if edAct {
+								col = tok.Text
+							}
+							ui.Text(c, "编辑").FontSize(float32(tok.TextMeta)).Bold().TextColor(col).SingleLine()
+						})
+						if edSeg.Clicked() && !edAct {
+							setTabMode(shell.ModeEdit)
+							tab.Mode = shell.ModeEdit
+						}
+
+						labAct := tab.Mode == shell.ModeLab
+						labSeg := ui.ButtonBase(c.Key("doc-mode-lab:"+tab.ID)).
+							Height(float32(tok.Spacing24)-2).Padding(0, float32(tok.Spacing8)).
+							AlignItems(ui.Center).Radius(float32(tok.ControlRadius)).Label("实验执行模式 · 防误触 (Ctrl+E)")
+						if labAct {
+							labSeg.Background(tok.AccentSoftBg)
+						}
+						labSeg.Children(func() {
+							col := tok.TextMuted
+							if labAct {
+								col = tok.Accent
+							}
+							ui.Row(c).AlignItems(ui.Center).Gap(float32(tok.Spacing4)).Children(func() {
+								ui.Icon(c, lucide.FlaskConical()).Size(float32(tok.Spacing12), float32(tok.Spacing12)).TextColor(col)
+								ui.Text(c, "实验").FontSize(float32(tok.TextMeta)).Bold().TextColor(col).SingleLine()
+							})
+						})
+						if labSeg.Clicked() && !labAct {
+							setTabMode(shell.ModeLab)
+							tab.Mode = shell.ModeLab
+						}
+					})
 				}
 
-				findBtn := components.IconButton(c, lucide.Search(), "页内查找 (Ctrl+F)", components.IconButtonCompact)
+				findBtn := components.IconButton(c, lucide.Search(), "页内查找 (Ctrl+F)", components.IconButtonPlain)
 				if *findOpen {
 					findBtn.Background(tok.AccentSoftBg)
 				}
@@ -371,29 +405,29 @@ func (a *app) renderVaultTabContent(c *ui.Context, pane *shell.PaneNode, tab she
 					*findOpen = !*findOpen
 				}
 
-				copiedAt := ui.Local(c.Root(), "doc-copy-ok:"+tab.FilePath, func() time.Time { return time.Time{} })
-				justCopied := !copiedAt.IsZero() && time.Since(*copiedAt) < 1500*time.Millisecond
-				ico := lucide.Copy()
-				if justCopied {
-					ico = lucide.Check()
-				}
-				copyBtn := components.IconButton(c, ico, "复制 Markdown / AsterML 原文", components.IconButtonCompact)
-				if justCopied {
-					copyBtn.TextColor(tok.Success)
-				}
-				if copyBtn.Clicked() {
-					c.Services().WriteClipboard(ld.Source)
-					now := time.Now()
-					*copiedAt = now
-					if a.shell != nil {
-						inv := a.shell.Invalidate
-						time.AfterFunc(1550*time.Millisecond, inv)
-					}
-				}
-
-				moreBtn := components.IconButton(c, lucide.Ellipsis(), "文档操作菜单", components.IconButtonCompact)
+				moreBtn := components.IconButton(c, lucide.Ellipsis(), "更多文档操作", components.IconButtonPlain)
 				components.MenuButton(c, moreBtn, func(m *components.Menu) {
-					srcLbl := "查看 / 编辑源码 (.asterml)"
+					if m.Item("导出 PDF 执行单…").Chosen() && ld.Parsed != nil {
+						a.startDocumentPDFExport(c, docTitle, "", "", a.vault.Root, ld.Parsed)
+					}
+					if m.Item("另存为模板").Chosen() {
+						if tpl, err := a.vault.SaveAsTemplate(tab.FilePath, docTitle); err == nil {
+							a.refreshVaultTreeAndCalendar()
+							c.AddToast(ui.Toast{Title: "已保存为模板：" + tpl.Name, Type: components.ToastSuccess})
+						}
+					}
+					if m.Item("创建副本").Chosen() {
+						if dup, err := a.vault.DuplicateFile(tab.FilePath, docDate); err == nil {
+							a.refreshVaultTreeAndCalendar()
+							a.openVaultFileInActivePane(dup.RelPath, dup.Title)
+						}
+					}
+					m.Separator()
+					if m.Item("复制纯文本原文").Chosen() {
+						c.Services().WriteClipboard(ld.Source)
+						c.AddToast(ui.Toast{Title: "已复制文档原文", Type: components.ToastSuccess})
+					}
+					srcLbl := "查看源码（高级）"
 					if tab.Mode == shell.ModeSource {
 						srcLbl = "返回可视化编辑"
 					}
@@ -404,33 +438,6 @@ func (a *app) renderVaultTabContent(c *ui.Context, pane *shell.PaneNode, tab she
 						} else {
 							setTabMode(shell.ModeSource)
 							tab.Mode = shell.ModeSource
-						}
-					}
-					m.Separator()
-					if m.Item("导出 PDF…").Chosen() && ld.Parsed != nil {
-						a.startDocumentPDFExport(c, docTitle, "", "", a.vault.Root, ld.Parsed)
-					}
-					if m.Item("复制 AsterML 原文").Chosen() {
-						c.Services().WriteClipboard(ld.Source)
-						*copiedAt = time.Now()
-						if a.shell != nil {
-							inv := a.shell.Invalidate
-							time.AfterFunc(1550*time.Millisecond, inv)
-						}
-					}
-					m.Separator()
-					if m.Item("另存为模板").Chosen() {
-						if tpl, err := a.vault.SaveAsTemplate(tab.FilePath, docTitle); err == nil {
-							a.refreshVaultTreeAndCalendar()
-							c.AddToast(ui.Toast{Title: "已保存为模板：" + tpl.Name, Type: components.ToastSuccess})
-						}
-					}
-					if m.Item("创建副本").Chosen() {
-						if dup, err := a.vault.DuplicateFile(tab.FilePath, docDate); err == nil {
-							a.refreshVaultTreeAndCalendar()
-							if a.shell != nil {
-								a.shell.OpenFileInPane(pane.ID, dup.RelPath, dup.Title, shell.ModeEdit, true)
-							}
 						}
 					}
 					m.Separator()
@@ -789,7 +796,11 @@ func (a *app) renderVaultTabContent(c *ui.Context, pane *shell.PaneNode, tab she
 					props["svg"] = string(raw)
 				}
 			}
-			if next, uErr := asterdoc.UpdateStepBlockInSource(ld.Source, stepID, blockID, props); uErr == nil {
+			if stepID == "" && ld.Parsed != nil {
+				if next, uErr := ld.Parsed.UpdateModule(blockID, props); uErr == nil {
+					applyLiveSource(next)
+				}
+			} else if next, uErr := asterdoc.UpdateStepBlockInSource(ld.Source, stepID, blockID, props); uErr == nil {
 				applyLiveSource(next)
 			}
 		}
@@ -933,12 +944,18 @@ func (a *app) renderVaultTabContent(c *ui.Context, pane *shell.PaneNode, tab she
 				padBot = a.shell.MobileBottomReserve(c) + float32(tok.Spacing24)
 			}
 			docScroll.Children(func() {
-				// Readable line length (760px for prose, widens to 940px when document has plates or data tables)
-				maxColW := float32(760)
+				// Readable line length adapts smoothly to viewport width (widens gently on 27"+ monitors)
+				winW, _ := c.Size()
+				maxColW := float32(780)
+				wideColW := float32(960)
+				if winW >= 1800 {
+					maxColW = 860
+					wideColW = 1060
+				}
 				if doc != nil {
 					for _, m := range doc.Modules {
 						if m.Kind == "plate" || m.Kind == "data_table" {
-							maxColW = 940
+							maxColW = wideColW
 							break
 						}
 						if m.Kind == "step" {
@@ -947,7 +964,7 @@ func (a *app) renderVaultTabContent(c *ui.Context, pane *shell.PaneNode, tab she
 									if bm, ok := raw.(map[string]any); ok {
 										k := fmt.Sprint(bm["kind"])
 										if k == "plate" || k == "data_table" {
-											maxColW = 940
+											maxColW = wideColW
 											break
 										}
 									}
@@ -1022,8 +1039,19 @@ func (a *app) renderVaultTabContent(c *ui.Context, pane *shell.PaneNode, tab she
 												dt := asterdoc.BorderlessTextInput(c, tok, dBuf, float32(tok.TextBody), false, "YYYY-MM-DD").
 													FontFeatures("tnum")
 												if dt.Submitted() || (!dt.Focused() && strings.TrimSpace(*dBuf) != docDate) {
-													next := asterdoc.SetFrontmatterMetadata(ld.Source, docTitle, strings.TrimSpace(*dBuf), docStatus)
-													applyLiveSource(next)
+													rawDate := strings.TrimSpace(*dBuf)
+													if rawDate == "" {
+														next := asterdoc.SetFrontmatterMetadata(ld.Source, docTitle, "", docStatus)
+														applyLiveSource(next)
+													} else if normDate := asterdoc.NormalizeDateYMD(rawDate); normDate != "" {
+														*dBuf = normDate
+														if normDate != docDate {
+															next := asterdoc.SetFrontmatterMetadata(ld.Source, docTitle, normDate, docStatus)
+															applyLiveSource(next)
+														}
+													} else {
+														*dBuf = docDate
+													}
 												}
 											} else {
 												ui.Text(c, dateBadge).FontSize(float32(tok.TextBody)).TextColor(tok.Text).FontFeatures("tnum")
@@ -1084,8 +1112,19 @@ func (a *app) renderVaultTabContent(c *ui.Context, pane *shell.PaneNode, tab she
 											dt := asterdoc.BorderlessTextInput(c, tok, dBuf, float32(tok.TextMeta), false, "YYYY-MM-DD").
 												FontFeatures("tnum")
 											if dt.Submitted() || (!dt.Focused() && strings.TrimSpace(*dBuf) != docDate) {
-												next := asterdoc.SetFrontmatterMetadata(ld.Source, docTitle, strings.TrimSpace(*dBuf), docStatus)
-												applyLiveSource(next)
+												rawDate := strings.TrimSpace(*dBuf)
+												if rawDate == "" {
+													next := asterdoc.SetFrontmatterMetadata(ld.Source, docTitle, "", docStatus)
+													applyLiveSource(next)
+												} else if normDate := asterdoc.NormalizeDateYMD(rawDate); normDate != "" {
+													*dBuf = normDate
+													if normDate != docDate {
+														next := asterdoc.SetFrontmatterMetadata(ld.Source, docTitle, normDate, docStatus)
+														applyLiveSource(next)
+													}
+												} else {
+													*dBuf = docDate
+												}
 											}
 										})
 									} else {
@@ -1162,9 +1201,9 @@ func (a *app) renderVaultTabContent(c *ui.Context, pane *shell.PaneNode, tab she
 								}
 								hdrBtn.Children(func() {
 									ui.Icon(c, chev).Size(float32(tok.Spacing16), float32(tok.Spacing16)).TextColor(tok.Accent)
-									ui.Text(c, "科学分析汇总 (AsterCore)").FontSize(float32(tok.TextSection)).Bold().TextColor(tok.Text)
+									ui.Text(c, "读数自动汇总").FontSize(float32(tok.TextSection)).Bold().TextColor(tok.Text)
 									ui.Spacer(c)
-									components.Badge(c, fmt.Sprintf("%d 项读板统计", len(summaries)))
+									components.Badge(c, fmt.Sprintf("%d 项统计", len(summaries)))
 								})
 								if hdrBtn.Clicked() {
 									*analOpen = !*analOpen
@@ -1175,10 +1214,14 @@ func (a *app) renderVaultTabContent(c *ui.Context, pane *shell.PaneNode, tab she
 										ui.Column(c.Key(fmt.Sprintf("sum-%d-%s", sIdx, sum.Kind))).FillWidth().
 											Padding(float32(tok.Spacing8)).Radius(float32(tok.ControlRadius)).
 											Background(tok.Elevated).Gap(float32(tok.Spacing4)).Children(func() {
-											ui.Row(c).FillWidth().AlignItems(ui.Center).Gap(float32(tok.Spacing8)).Children(func() {
+											ui.Row(c).FillWidth().Wrap().AlignItems(ui.Center).Gap(float32(tok.Spacing8)).Children(func() {
 												ui.Text(c, sum.Title).FontSize(float32(tok.TextData)).Bold().TextColor(tok.Text)
 												if sum.Control != "" {
-													ui.Text(c, "对照: "+sum.Control).FontSize(float32(tok.TextMeta)).TextColor(tok.TextMuted)
+													ui.Text(c, "对照："+sum.Control).FontSize(float32(tok.TextMeta)).TextColor(tok.TextMuted)
+												}
+												if sum.BlankN > 0 && sum.BlankMean != nil {
+													ui.Text(c, fmt.Sprintf("空白本底 %.3f（%d 孔）", *sum.BlankMean, sum.BlankN)).
+														FontSize(float32(tok.TextMeta)).TextColor(tok.TextMuted).FontFeatures("tnum")
 												}
 												if sum.ExcludedN > 0 {
 													ui.Text(c, fmt.Sprintf("已剔除 %d 异常孔", sum.ExcludedN)).FontSize(float32(tok.TextMeta)).TextColor(tok.Warning).FontFeatures("tnum")
@@ -1190,7 +1233,7 @@ func (a *app) renderVaultTabContent(c *ui.Context, pane *shell.PaneNode, tab she
 													for _, g := range sum.CCK8.Groups {
 														ui.Row(c).FillWidth().AlignItems(ui.Center).Gap(float32(tok.Spacing12)).Children(func() {
 															ui.Text(c, g.Group).FontSize(float32(tok.TextMeta)).Bold().TextColor(tok.Text).Width(140).SingleLine().Ellipsis("…")
-															ui.Text(c, fmt.Sprintf("Mean %.3f ± %.3f (n=%d)", g.Mean, g.SD, g.N)).FontSize(float32(tok.TextMeta)).TextColor(tok.TextMuted).FontFeatures("tnum").Grow(1)
+															ui.Text(c, fmt.Sprintf("均值 %.3f ± %.3f（%d 复孔）", g.Mean, g.SD, g.N)).FontSize(float32(tok.TextMeta)).TextColor(tok.TextMuted).FontFeatures("tnum").Grow(1)
 															ui.Text(c, fmt.Sprintf("相对活力 %.1f%%", g.RelativeActivity*100)).FontSize(float32(tok.TextMeta)).Bold().TextColor(tok.Accent).FontFeatures("tnum")
 														})
 													}
@@ -1201,7 +1244,7 @@ func (a *app) renderVaultTabContent(c *ui.Context, pane *shell.PaneNode, tab she
 														ui.Row(c).FillWidth().AlignItems(ui.Center).Gap(float32(tok.Spacing12)).Children(func() {
 															ui.Text(c, g.SampleID).FontSize(float32(tok.TextMeta)).Bold().TextColor(tok.Text).Width(140).SingleLine().Ellipsis("…")
 															ui.Text(c, fmt.Sprintf("ΔΔCq %.2f", g.DeltaDeltaCq)).FontSize(float32(tok.TextMeta)).TextColor(tok.TextMuted).FontFeatures("tnum").Grow(1)
-															ui.Text(c, fmt.Sprintf("FoldChange %.2fx", g.FoldChange)).FontSize(float32(tok.TextMeta)).Bold().TextColor(tok.Accent).FontFeatures("tnum")
+															ui.Text(c, fmt.Sprintf("相对表达 %.2f×", g.FoldChange)).FontSize(float32(tok.TextMeta)).Bold().TextColor(tok.Accent).FontFeatures("tnum")
 														})
 													}
 												}
@@ -1209,7 +1252,15 @@ func (a *app) renderVaultTabContent(c *ui.Context, pane *shell.PaneNode, tab she
 												for _, g := range sum.Groups {
 													ui.Row(c).FillWidth().AlignItems(ui.Center).Gap(float32(tok.Spacing12)).Children(func() {
 														ui.Text(c, g.Group).FontSize(float32(tok.TextMeta)).Bold().TextColor(tok.Text).Width(140).SingleLine().Ellipsis("…")
-														ui.Text(c, fmt.Sprintf("Mean %.3f ± %.3f (n=%d)", g.Mean, g.SD, g.N)).FontSize(float32(tok.TextMeta)).TextColor(tok.TextMuted).FontFeatures("tnum").Grow(1)
+														repTxt := fmt.Sprintf("%d 复孔", g.TechReplicates)
+														if g.BioSamples > 0 {
+															repTxt = fmt.Sprintf("%d 复孔 · 独立 n=%d", g.TechReplicates, g.BioSamples)
+														}
+														statTxt := fmt.Sprintf("均值 %.3f ± %.3f（%s）", g.Mean, g.SD, repTxt)
+														ui.Text(c, statTxt).FontSize(float32(tok.TextMeta)).TextColor(tok.TextMuted).FontFeatures("tnum").Grow(1)
+														if g.BlankCorrMean != nil {
+															ui.Text(c, fmt.Sprintf("扣空白 %.3f", *g.BlankCorrMean)).FontSize(float32(tok.TextMeta)).Bold().TextColor(tok.Accent).FontFeatures("tnum")
+														}
 													})
 												}
 											}

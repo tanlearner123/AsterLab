@@ -11,15 +11,11 @@ from pathlib import Path
 
 
 BUNDLE_DIRS = [
-    "docs/handbook",
+    "docs/guide",
 ]
 
 BUNDLE_FILES = [
-    "docs/HANDBOOK.md",
-    "docs/README.md",
-    "docs/architecture.md",
-    "docs/product/ux-contract.md",
-    "docs/product/design-system.md",
+    "docs/guide/index.md",
 ]
 
 

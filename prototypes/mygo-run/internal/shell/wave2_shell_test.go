@@ -70,7 +70,7 @@ func TestGlobalSearchModalAndCompanionDiagnosticsTab(t *testing.T) {
 		t.Fatal(err)
 	}
 	tt.Frame()
-	if !tt.HasText("复现验证实验") || !tt.HasText("ARRIVE_MISSING_N") {
+	if !tt.HasText("复现验证实验") || !tt.HasText("缺少独立 n") {
 		t.Fatalf("expected backlinks and diagnostics in tab 2, got: %q", tt.Texts())
 	}
 

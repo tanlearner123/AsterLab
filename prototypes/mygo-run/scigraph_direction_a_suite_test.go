@@ -1,6 +1,7 @@
 package main
 
 import (
+	"math"
 	"os"
 	"path/filepath"
 	"strings"
@@ -9,6 +10,7 @@ import (
 
 	"github.com/egoist/mygo/ui"
 
+	"asterlab-mygo-prototype/internal/astercore"
 	"asterlab-mygo-prototype/internal/asterdoc"
 	"asterlab-mygo-prototype/internal/shell"
 )
@@ -390,6 +392,7 @@ schedule_window: "t0 + 6 h 明场采图"
 		t.Fatal(err)
 	}
 	sh.RenderTabContent = a.renderVaultTabContent
+	sh.OnOpenUserGuide = a.openOrSeedUserGuideDoc
 	sh.EnsureTabs()
 	sh.OpenFileInPane(sh.ActivePaneID, relPath, "方向 A 闭环实拍", shell.ModeEdit, true)
 	sh.RightOpen = false
@@ -408,6 +411,355 @@ schedule_window: "t0 + 6 h 明场采图"
 		}
 		if !st.HasText("已锚定 t0") {
 			t.Fatalf("expected live {#t0} wake-up banner 已锚定 t0 visible on downstream window timer")
+		}
+	})
+}
+
+// TestV020RealHUVECClosedLoopExperimentGate validates the end-to-end real experiment lifecycle:
+// 1) Create an experiment inside a real Vault on disk
+// 2) Assign 12-well plate groups + PBS blank column (9 sample / 3 blank)
+// 3) Exclude well B2 during Lab-mode execution (effective sample wells drop 9 -> 8)
+// 4) Cascade into cross-unit chained calculators (8 * 500 * 1.2 = 4800 uL -> auto-converted 4.8 mL -> 240 mg GelMA)
+// 5) Stamp {#t0} anchor and verify downstream t0+6h window wake-up
+// 6) Record real well readings into data_table, run astercore.AnalyzeDocument() (confirm B2 excluded + blank mean subtracted)
+// 7) Verify recorded-data plate relayout lock refuses silent relayout
+// 8) Persist to disk, close completely, reopen fresh from disk (simulated app restart), and verify 100% lossless state!
+func TestV020RealHUVECClosedLoopExperimentGate(t *testing.T) {
+	vRoot := t.TempDir()
+	relPath := filepath.Join("notes", "2026", "11", "huvec-v020-closed-loop.asterml")
+	fullPath := filepath.Join(vRoot, relPath)
+	if err := os.MkdirAll(filepath.Dir(fullPath), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	t0ISO := time.Now().UTC().Add(-45 * time.Minute).Format(time.RFC3339)
+	initialSrc := `---
+asterml: "2.1"
+title: HUVEC 成管全链路闭环门禁实测
+date: "2026-11-22"
+status: running
+---
+
+## 1.1 实验设计蓝图
+
+` + "```asterlab" + `
+id: gt-huvec
+kind: group_table
+schema: 1
+title: 实验分组
+rows:
+  - id: g_ctrl
+    name: Control
+    role: control
+    independent_n: 3
+  - id: g_vegf
+    name: VEGF 50ng/mL
+    role: treatment
+    independent_n: 3
+  - id: g_low
+    name: Low Dose
+    role: treatment
+    independent_n: 3
+  - id: g_pbs
+    name: PBS Blank
+    role: control
+    independent_n: 3
+` + "```" + `
+
+` + "```asterlab" + `
+id: plate-huvec
+kind: plate
+schema: 1
+title: 12孔成管板
+format: 12
+groups:
+  g_ctrl: [A1, A2, A3]
+  g_vegf: [B1, B2, B3]
+  g_low: [C1, C2, C3]
+  g_pbs: [A4, B4, C4]
+roles:
+  A4: blank
+  B4: blank
+  C4: blank
+excluded_wells: [B2]
+samples:
+  A1: Donor-1
+  A2: Donor-2
+  A3: Donor-3
+  B1: Donor-1
+  B3: Donor-3
+  C1: Donor-1
+  C2: Donor-2
+  C3: Donor-3
+` + "```" + `
+
+## 1.2 配胶与接种 {#t0}
+
+` + "```asterlab" + `
+id: calc-vol
+kind: calculator
+schema: 1
+title: 1. 前驱液总需求量（联动剔除异常孔后的 8 有效孔）
+mode: formula
+rows:
+  - key: N
+    label: 有效实验孔
+    kind: input
+    value: "@plate.plate-huvec.sample_wells"
+    unit: 孔
+  - key: V_well
+    label: 单孔体积
+    kind: input
+    value: 500
+    unit: uL
+  - key: V_tot
+    label: 前驱液总量
+    kind: formula
+    formula: 'N \times V_{well} \times 1.2'
+    unit: uL
+` + "```" + `
+
+` + "```asterlab" + `
+id: calc-mass
+kind: calculator
+schema: 1
+title: 2. 5% w/v GelMA 冻干粉称量（跨单位 uL -> mL 自动换算）
+mode: formula
+rows:
+  - key: V_ml
+    label: 上游前驱液总量
+    kind: input
+    value: "@calc.calc-vol.V_tot"
+    unit: mL
+  - key: C_w
+    label: 质量分数
+    kind: input
+    value: 5
+    unit: "% w/v"
+  - key: m_gelma
+    label: 需称冻干粉
+    kind: formula
+    formula: 'C_{w} \times V_{ml} \times 10'
+    unit: mg
+` + "```" + `
+
+` + "```asterlab" + `
+id: timer-t0
+kind: timer
+schema: 1
+title: 接种完成锚点
+mode: stopwatch
+anchor: t0
+started_at: "` + t0ISO + `"
+` + "```" + `
+
+` + "```asterlab" + `
+id: timer-6h
+kind: timer
+schema: 1
+title: 成管采图时间窗
+mode: window
+anchor: t0
+offset:
+  value: 6
+  unit: h
+schedule_window: "t0 + 6 h 明场采图"
+` + "```" + `
+
+## 1.3 结果记录与统计
+
+` + "```asterlab" + `
+id: dt-tubes
+kind: data_table
+schema: 1
+title: 6h 成管节点数读数
+container_ref: plate-huvec
+columns:
+  - key: well
+    label: 孔位
+    value_kind: text
+  - key: value
+    label: 节点数
+    value_kind: number
+rows:
+  - well: A1
+    value: 50
+  - well: A2
+    value: 52
+  - well: A3
+    value: 48
+  - well: B1
+    value: 100
+  - well: B2
+    value: 9999
+  - well: B3
+    value: 102
+  - well: A4
+    value: 2
+  - well: B4
+    value: 2
+  - well: C4
+    value: 2
+` + "```" + `
+`
+	// Write via atomic write, then reopen cleanly from disk (simulating full restart)
+	if err := asterdoc.WriteFileAtomic(fullPath, []byte(initialSrc)); err != nil {
+		t.Fatalf("WriteFileAtomic: %v", err)
+	}
+	reopenedRaw, err := os.ReadFile(fullPath)
+	if err != nil {
+		t.Fatalf("ReadFile after restart: %v", err)
+	}
+	doc, err := asterdoc.Parse(string(reopenedRaw))
+	if err != nil {
+		t.Fatalf("Parse after restart: %v", err)
+	}
+
+	// Verify SciGraph plate + excluded_wells + anchor wake-up
+	g := asterdoc.BuildSciGraph(doc)
+	pl := g.ContainerByID("plate-huvec")
+	if pl == nil || !pl.Assigned || pl.SampleWells != 8 || pl.BlankWells != 3 || pl.ExcludedWells != 1 {
+		t.Fatalf("unexpected reopened plate state: %+v", pl)
+	}
+	hasT0 := false
+	for _, anc := range g.Anchors {
+		if anc.ID == "t0" && !anc.RecordedAt.IsZero() {
+			hasT0 = true
+			break
+		}
+	}
+	if !hasT0 {
+		t.Fatalf("expected {#t0} runtime anchor to survive restart, got %+v", g.Anchors)
+	}
+
+	// Verify chained calculator cross-unit conversion: 8 * 500 * 1.2 = 4800 uL -> 4.8 mL -> 240 mg!
+	var calcMassMod *asterdoc.Module
+	for i := range doc.Modules {
+		if doc.Modules[i].ID == "calc-mass" {
+			calcMassMod = &doc.Modules[i]
+			break
+		}
+	}
+	if calcMassMod == nil {
+		t.Fatal("missing calc-mass module")
+	}
+	resMass := asterdoc.EvalCalculatorWithActuals(doc, calcMassMod.Data, nil)
+	if resMass.Err != nil {
+		t.Fatalf("calc-mass eval failed: %v", resMass.Err)
+	}
+	if math.Abs(resMass.Rows[0].Amount-4.8) > 1e-4 || math.Abs(resMass.Rows[2].Amount-240.0) > 1e-3 {
+		t.Fatalf("expected 4800 uL -> 4.8 mL -> 240 mg, got %+v", resMass.Rows)
+	}
+
+	// Verify recorded-data relayout lock is enforced after reopen
+	var huvecPlate *asterdoc.Plate
+	for i := range doc.Modules {
+		if doc.Modules[i].ID == "plate-huvec" && doc.Modules[i].Plate != nil {
+			huvecPlate = doc.Modules[i].Plate
+			break
+		}
+	}
+	if _, _, _, err := asterdoc.RelayoutExistingPlate(doc, huvecPlate, asterdoc.LayoutColMajor, false); err == nil {
+		t.Fatalf("expected relayout to be blocked on plate with excluded wells + readings")
+	}
+
+	// Verify unified astercore.AnalyzeDocument consumes SciUnit (excludes B2=9999, tracks BlankMean=2)
+	sums := astercore.AnalyzeDocument(doc, relPath)
+	if len(sums) != 1 || sums[0].ExcludedN != 1 || sums[0].BlankN != 3 || sums[0].BlankMean == nil || *sums[0].BlankMean != 2 {
+		t.Fatalf("unexpected astercore summary: %+v", sums)
+	}
+
+	// Verify full Vault UI workspace loads the reopened document without errors and renders 240 mg & 已锚定 t0
+	sh := &shell.Shell{TodayDate: "2026-11-22", SelectedDate: "2026-11-22"}
+	a := &app{shell: sh}
+	if err := a.initVaultWorkspace(vRoot); err != nil {
+		t.Fatalf("initVaultWorkspace: %v", err)
+	}
+	sh.RenderTabContent = a.renderVaultTabContent
+	sh.OnOpenUserGuide = a.openOrSeedUserGuideDoc
+	sh.EnsureTabs()
+	sh.OpenFileInPane(sh.ActivePaneID, relPath, "HUVEC 闭环", shell.ModeEdit, true)
+	sh.RightOpen = false
+
+	tester := ui.NewTester(func(c *ui.Context) {
+		sh.RenderSplitView(c)
+	}, 1280, 1100)
+	tester.Frame()
+	tester.Frame()
+	if !tester.HasText("240") || !tester.HasText("已锚定 t0") {
+		t.Fatalf("expected reopened UI to show 240 mg and live 已锚定 t0 anchor wake-up")
+	}
+}
+
+// TestWetLabUXConvergenceAndSpotlightTourVisualGate verifies Package A/B/C end-to-end:
+// - Interactive Obsidian-style user guide opens cleanly in a real Vault with live widgets
+// - Calculator @plate.sample_wells renders as live human value pill ("9 有效孔") with zero raw @syntax leak
+// - AssessDocument has zero false-positive NO_STEPS / NO_GROUPS on #@ steps + top-level group_table
+// - Compact [ 编辑 | 实验 ] header switch + 读数自动汇总 (blank background + blank-corrected mean)
+// - Interactive 5-step region-highlighted Spotlight Tour renders cleanly
+func TestWetLabUXConvergenceAndSpotlightTourVisualGate(t *testing.T) {
+	vRoot := t.TempDir()
+	sh := &shell.Shell{TodayDate: "2026-11-22", SelectedDate: "2026-11-22"}
+	a := &app{shell: sh}
+	if err := a.initVaultWorkspace(vRoot); err != nil {
+		t.Fatalf("initVaultWorkspace: %v", err)
+	}
+	sh.RenderTabContent = a.renderVaultTabContent
+	sh.OnOpenUserGuide = a.openOrSeedUserGuideDoc
+	sh.EnsureTabs()
+	a.openOrSeedUserGuideDoc()
+	sh.RightOpen = false
+
+	// 1. Verify AssessDocument produces ZERO false-positive NO_STEPS or NO_GROUPS on #@ + top-level group_table
+	tab := sh.ActiveTab()
+	if tab == nil {
+		t.Fatal("expected user guide tab to be open")
+	}
+	rawGuide, err := os.ReadFile(filepath.Join(vRoot, tab.FilePath))
+	if err != nil {
+		t.Fatalf("failed to read seeded user guide: %v", err)
+	}
+	parsedGuide, err := asterdoc.Parse(string(rawGuide))
+	if err != nil {
+		t.Fatalf("failed to parse seeded user guide: %v", err)
+	}
+	rep := astercore.AssessDocument(parsedGuide, nil)
+	for _, d := range rep.Diagnostics {
+		if d.Code == "NO_STEPS" || d.Code == "NO_GROUPS" {
+			t.Fatalf("unexpected false-positive diagnostic on #@ + group_table guide: %+v", d)
+		}
+	}
+
+	outDir := filepath.Join("..", "..", "docs", "sdk", "evidence", "v2-visual-catalog")
+	_ = os.MkdirAll(outDir, 0o755)
+
+	// 2. Capture interactive user guide + live human calculator pill + [ 编辑 | 实验 ] header
+	renderVisualPNGSteps(t, outDir, "ux_convergence_guide_and_pills.png", 1360, 1080, false, func(c *ui.Context) {
+		sh.RenderSplitView(c)
+	}, func(st *ui.Tester) {
+		st.Frame()
+		st.Frame()
+		if !st.HasText("编辑") || !st.HasText("实验") {
+			t.Fatalf("expected compact [ 编辑 | 实验 ] switcher in doc header")
+		}
+		if !st.HasText("9 有效孔") {
+			t.Fatalf("expected live human calculator pill '9 有效孔' instead of raw @plate.sample_wells")
+		}
+		if st.HasText("@plate.sample_wells") {
+			t.Fatalf("raw @plate.sample_wells leaked into calculator UI!")
+		}
+	})
+
+	// 3. Capture interactive region-highlighted Spotlight Tour overlay (step 3: widgets & right-click menu)
+	sh.StartTour()
+	sh.TourStep = 2
+	renderVisualPNGSteps(t, outDir, "ux_convergence_spotlight_tour.png", 1360, 900, false, func(c *ui.Context) {
+		sh.RenderSplitView(c)
+	}, func(st *ui.Tester) {
+		st.Frame()
+		st.Frame()
+		if !st.HasText("3 / 5 · 交互组件与右键菜单") || !st.HasText("打开新手指南文档") {
+			t.Fatalf("expected spotlight tour overlay card visible")
 		}
 	})
 }

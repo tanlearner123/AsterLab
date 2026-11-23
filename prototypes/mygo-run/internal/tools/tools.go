@@ -154,6 +154,35 @@ func (w *Workspace) ReloadPantry() {
 	w.Error, w.Status, w.PantryRetry = "", "", nil
 }
 
+// ResetPantryState clears all cached pantry ledger, metadata, box, and dialog state
+// and reloads fresh data from the currently active Vault/callbacks.
+func (w *Workspace) ResetPantryState() {
+	w.Pantry = runs.PantryLedger{}
+	w.PantryLoaded = false
+	w.PantryMeta = nil
+	w.pantryMetaLoaded = false
+	w.PantryBoxes = nil
+	w.pantryBoxesLoaded = false
+	w.pantryCustomImages = nil
+	w.activeBoxID = ""
+	w.selectedBoxSlot = ""
+	w.boxMoveItemID = ""
+	w.boxMoveFromSlot = ""
+	w.PantryDialogOpen = false
+	w.PantryBoxDialogOpen = false
+	w.pantryPickerOpen = false
+	w.pantryConfirmDel = false
+	w.boxConfirmDel = false
+	w.pantryDialogErr = ""
+	w.boxDialogErr = ""
+	w.PantryExportJSON = ""
+	w.Error = ""
+	w.Status = ""
+	w.ReloadPantry()
+	w.EnsurePantryMetaLoaded()
+	w.EnsurePantryBoxesLoaded()
+}
+
 func (w *Workspace) SavePantry() {
 	w.PantryRetry = nil
 	if w.Callbacks.UpsertPantry == nil {
@@ -328,10 +357,21 @@ func ViewPantry(c *ui.Context, w *Workspace) {
 					Radius(float32(tok.ControlRadius)).Background(tok.DangerBg).Border(1, tok.Danger).
 					AlignItems(ui.Center).Gap(float32(tok.Spacing8)).Children(func() {
 					ui.Text(c, w.Error).FontSize(float32(tok.TextMeta)).TextColor(tok.DangerText).Grow(1).MinWidth(0)
+					if w.PantryRetry != nil && components.Button(c, "重试", components.ButtonSecondary).Clicked() {
+						w.PantryRetry()
+					}
+				})
+			} else if w.Status != "" {
+				ui.Row(c).FillWidth().Padding(float32(tok.Spacing8), float32(tok.Spacing12)).
+					Radius(float32(tok.ControlRadius)).Background(tok.SuccessBg).Border(1, tok.Success.Alpha(.4)).
+					AlignItems(ui.Center).Children(func() {
+					ui.Text(c, w.Status).FontSize(float32(tok.TextMeta)).Bold().TextColor(tok.SuccessText)
 				})
 			}
 		})
 	})
+	w.renderPantryDetailDialog(c)
+	w.renderPantryBoxDialog(c)
 }
 
 func View(c *ui.Context, w *Workspace) {
